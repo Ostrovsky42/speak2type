@@ -8,6 +8,8 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -23,9 +25,47 @@ func main() {
 	fmt.Println("🎤 Speak2Type VAD Test")
 	fmt.Println("===================")
 
+	deviceIndex := flag.Int("device-index", -1, "capture device index (see list above, -1 = system default)")
+	debugRMS := flag.Bool("debug-rms", false, "print RMS/min/max for every VAD chunk")
+	debugOut := flag.Bool("debug-out", false, "print raw VAD model outputs")
+	sampleRate := flag.Int("sample-rate", 16000, "audio sample rate (8000 or 16000)")
+	chunkSize := flag.Int("chunk-size", 512, "VAD chunk size (512, 1024, 1536)")
+	inputGain := flag.Float64("gain", 1.0, "linear gain applied before VAD (e.g., 10, 20 for quiet mics)")
+	singleLogit := flag.Bool("single-logit", false, "treat single-value VAD output as logit (apply sigmoid)")
+	invertOut := flag.Bool("invert-out", false, "invert final VAD probability (prob = 1 - prob)")
+	gateStart := flag.Float64("gate-start", 0.5, "gate start threshold (prob >= start opens speech)")
+	gateEnd := flag.Float64("gate-end", 0.35, "gate end threshold (prob < end closes speech)")
+	normRMS := flag.Float64("norm-rms", 0, "normalize chunk RMS to this target before VAD (0 = disabled)")
+	flag.Parse()
+
+	// List devices (match mic-test output for easy comparison)
+	fmt.Println("\n📋 Available audio devices:")
+	devices, err := audio.ListDevices(context.Background())
+	if err != nil {
+		panic(fmt.Sprintf("Failed to list devices: %v", err))
+	}
+	for _, dev := range devices {
+		fmt.Printf("  %s\n", dev.String())
+	}
+	fmt.Println()
+
 	// 1. Initialize Audio Service
 	audioConfig := audio.DefaultConfig()
-	audioConfig.BufferMS = 32 // Match VAD chunk size (512 samples @ 16kHz = 32ms)
+	audioConfig.SampleRate = uint32(*sampleRate)
+	audioConfig.BufferMS = uint32((*chunkSize * 1000) / *sampleRate) // match chunk duration
+
+	if len(devices) > 0 {
+		selected := resolveDevice(devices, *deviceIndex)
+		if selected != nil {
+			audioConfig.DeviceID = &selected.ID
+			fmt.Printf("🎚️  Using capture device: %s\n", selected.String())
+		} else {
+			fmt.Println("🎚️  Using capture device: system default (no default flag from driver)")
+		}
+	} else {
+		fmt.Println("⚠️  No capture devices reported by malgo; falling back to default device selection")
+	}
+	fmt.Printf("🔧 Audio: %d Hz, %d channel(s), buffer %dms\n", audioConfig.SampleRate, audioConfig.Channels, audioConfig.BufferMS)
 
 	audioService, err := audio.NewAudioService(audioConfig)
 	if err != nil {
@@ -36,6 +76,17 @@ func main() {
 	// 2. Initialize VAD Service
 	vadConfig := vad.DefaultConfig()
 	vadConfig.ModelPath = "models/silero_vad.onnx"
+	vadConfig.SampleRate = *sampleRate
+	vadConfig.ChunkSize = *chunkSize
+	vadConfig.DebugRMS = *debugRMS
+	vadConfig.DebugOut = *debugOut
+	vadConfig.InputGain = float32(*inputGain)
+	vadConfig.SingleLogit = *singleLogit
+	vadConfig.InvertOut = *invertOut
+	if *normRMS > 0 {
+		vadConfig.NormalizeRMS = true
+		vadConfig.TargetRMS = float32(*normRMS)
+	}
 
 	vadService, err := vad.NewVADService(vadConfig)
 	if err != nil {
@@ -45,6 +96,8 @@ func main() {
 
 	// 3. Initialize Gate
 	gateConfig := vad.DefaultGateConfig()
+	gateConfig.ThresholdStart = float32(*gateStart)
+	gateConfig.ThresholdEnd = float32(*gateEnd)
 	gate := vad.NewGate(gateConfig)
 
 	// Start Audio
@@ -62,7 +115,7 @@ func main() {
 	// Here we poll the ring buffer for simplicity, but we need to be careful to sync with audio rate.
 	// Better: use a ticker matching chunk duration (32ms).
 
-	ticker := time.NewTicker(32 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond) // Poll faster than audio rate
 	defer ticker.Stop()
 
 	sigChan := make(chan os.Signal, 1)
@@ -78,18 +131,17 @@ func main() {
 			return
 
 		case <-ticker.C:
-			// Get latest samples from RingBuffer
-			// Note: This is a simplified approach. In production, we should track read position
-			// to ensure we process contiguous chunks without gaps or overlaps.
-			// For visualization, SnapshotLatest is acceptable.
-			samples := audioService.SnapshotLatest(vadConfig.ChunkSize)
-
-			if len(samples) < vadConfig.ChunkSize {
-				continue // Not enough data yet
+			// Check if we have enough data for a full chunk
+			stats := audioService.GetStats()
+			if stats.BufferStats.Available < vadConfig.ChunkSize {
+				continue
 			}
 
-			// Copy to fixed-size chunk
-			copy(chunk, samples)
+			// Read full chunk (consumes data)
+			n := audioService.Read(chunk)
+			if n < vadConfig.ChunkSize {
+				continue
+			}
 
 			// Run VAD
 			prob, err := vadService.Process(chunk)
@@ -124,4 +176,28 @@ func visualize(prob float32, active bool) {
 
 	// Clear line and print
 	fmt.Printf("\r%s[%.4f] | %s | %s\033[0m", color, prob, state, graph)
+}
+
+func resolveDevice(devices []audio.DeviceInfo, idx int) *audio.DeviceInfo {
+	if len(devices) == 0 {
+		return nil
+	}
+
+	// Explicit index takes priority
+	if idx >= 0 {
+		if idx >= len(devices) {
+			panic(fmt.Sprintf("device-index %d out of range (0-%d)", idx, len(devices)-1))
+		}
+		return &devices[idx]
+	}
+
+	// Otherwise pick the driver-reported default
+	for i := range devices {
+		if devices[i].IsDefault {
+			return &devices[i]
+		}
+	}
+
+	// Fallback to the first device if nothing is marked default
+	return &devices[0]
 }

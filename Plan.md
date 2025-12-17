@@ -255,11 +255,11 @@ Phases
 Phase 1: Audio Foundation (COMPLETE)
 Phase 2: VAD (COMPLETE)
 Phase 3: ASR (COMPLETE)
-Phase 4: Text Merger (IN PROGRESS)
+Phase 4: Text Merger (NEXT)
 Phase 5: Session Management
 Phase 6: Input & UI
 Phase 7: Production
-Progress: 1/7 phases (14%)
+Progress: 3/7 phases (42%)
 
 Key Milestones
 Project structure created
@@ -295,7 +295,8 @@ WER (Russian): <12%
 WER (English): <8%
 Notes
 Phase 1 Complete: 2025-11-29
-Next Review: After Phase 2 VAD implementation
+Phase 2/3 Complete: 2025-12-17
+Next Review: After Phase 4 Text Merger implementation
 Target 1.0 Release: TBD (after Phase 7)
 
 Russian Language: Mandatory, first-class support enforced at all phases.

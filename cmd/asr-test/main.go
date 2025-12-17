@@ -2,9 +2,12 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,8 +20,33 @@ func main() {
 	fmt.Println("🗣️  Speak2Type ASR Test")
 	fmt.Println("===================")
 
+	deviceIndex := flag.Int("device-index", -1, "capture device index (-1 = system default)")
+	asrLang := flag.String("lang", "ru", "ASR language code (ru, en, etc)")
+	singleLogit := flag.Bool("single-logit", false, "treat VAD output as logit (apply sigmoid)")
+	gain := flag.Float64("gain", 1.0, "linear gain applied before VAD")
+	normRMS := flag.Float64("norm-rms", 0, "normalize RMS to this target (0 = disabled)")
+	flag.Parse()
+
+	// List devices
+	fmt.Println("\n📋 Available audio devices:")
+	devices, err := audio.ListDevices(context.Background())
+	if err != nil {
+		panic(fmt.Sprintf("Failed to list devices: %v", err))
+	}
+	for _, dev := range devices {
+		fmt.Printf("  %s\n", dev.String())
+	}
+	fmt.Println()
+
 	// 1. Init Audio
 	audioConfig := audio.DefaultConfig()
+	if *deviceIndex >= 0 && *deviceIndex < len(devices) {
+		audioConfig.DeviceID = &devices[*deviceIndex].ID
+		fmt.Printf("🎚️  Using capture device: %s\n", devices[*deviceIndex].String())
+	} else {
+		fmt.Println("🎚️  Using capture device: system default")
+	}
+
 	audioService, err := audio.NewAudioService(audioConfig)
 	if err != nil {
 		panic(err)
@@ -27,6 +55,13 @@ func main() {
 
 	// 2. Init VAD
 	vadConfig := vad.DefaultConfig()
+	vadConfig.SingleLogit = *singleLogit
+	vadConfig.InputGain = float32(*gain)
+	if *normRMS > 0 {
+		vadConfig.NormalizeRMS = true
+		vadConfig.TargetRMS = float32(*normRMS)
+	}
+
 	vadService, err := vad.NewVADService(vadConfig)
 	if err != nil {
 		panic(err)
@@ -37,7 +72,7 @@ func main() {
 	// 3. Init ASR
 	asrConfig := asr.DefaultConfig()
 	asrConfig.ModelPath = "models/ggml-base.bin"
-	asrConfig.LanguageMode = "ru" // Force Russian for demo
+	asrConfig.LanguageMode = *asrLang
 
 	asrService, err := asr.NewASRService(asrConfig)
 	if err != nil {
@@ -52,7 +87,7 @@ func main() {
 	}
 	defer audioService.Stop()
 
-	fmt.Println("✅ Pipeline started. Speak in Russian...")
+	fmt.Printf("✅ Pipeline started (Gain: %.1f, Norm: %.1f, Logit: %v). Speak...\n", *gain, *normRMS, *singleLogit)
 
 	// Pipeline State
 	var (
@@ -90,11 +125,17 @@ func main() {
 		case <-sigChan:
 			return
 		case <-ticker.C:
-			samples := audioService.SnapshotLatest(vadConfig.ChunkSize)
-			if len(samples) < vadConfig.ChunkSize {
+			// Check available samples
+			stats := audioService.GetStats()
+			if stats.BufferStats.Available < vadConfig.ChunkSize {
 				continue
 			}
-			copy(chunk, samples)
+
+			// Read chunk (consumes data)
+			n := audioService.Read(chunk)
+			if n < vadConfig.ChunkSize {
+				continue
+			}
 
 			// VAD
 			prob, err := vadService.Process(chunk)
@@ -103,10 +144,15 @@ func main() {
 			}
 			_, active := gate.Process(prob)
 
+			// Visual feedback (Live probability)
+			bars := int(prob * 10)
+			graph := strings.Repeat("█", bars) + strings.Repeat("░", 10-bars)
+			fmt.Printf("\rVAD: [%.4f] %s | ", prob, graph)
+
 			// Logic: Accumulate speech
 			if active {
 				if !isSpeaking {
-					fmt.Print("🔴") // Start speaking
+					fmt.Print("🔴 SPEAKING ") // Start speaking
 					isSpeaking = true
 				}
 				speechBuffer = append(speechBuffer, chunk...)
@@ -115,21 +161,22 @@ func main() {
 				if time.Duration(len(speechBuffer)/16000)*time.Second > MaxSpeechDuration {
 					submitASR(asrService, speechBuffer)
 					speechBuffer = nil
-					fmt.Print("✂️")
+					fmt.Print("\n✂️  SPLIT ")
 				}
 			} else {
 				if isSpeaking {
 					// Just stopped speaking
 					silenceStart = time.Now()
 					isSpeaking = false
-					fmt.Print("⚫") // Silence
+					fmt.Print("⚫ SILENCE ") // Silence
 				}
 
 				// If silent for enough time and have data, submit
 				if len(speechBuffer) > 0 && time.Since(silenceStart) > SilenceSplit {
+					fmt.Print("🚀 SUBMITTING ") // Sent
 					submitASR(asrService, speechBuffer)
 					speechBuffer = nil
-					fmt.Print("🚀") // Sent
+					fmt.Println()
 				}
 			}
 		}

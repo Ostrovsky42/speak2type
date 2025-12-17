@@ -226,6 +226,12 @@ func (a *AudioService) SnapshotLatest(sampleCount int) []float32 {
 	return a.ringBuffer.SnapshotLatest(sampleCount)
 }
 
+// Read consumes samples from the buffer.
+// Returns number of samples read.
+func (a *AudioService) Read(out []float32) int {
+	return a.ringBuffer.Read(out)
+}
+
 // IsRecording returns true if audio capture is active.
 func (a *AudioService) IsRecording() bool {
 	return a.isRecording.Load()

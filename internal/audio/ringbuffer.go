@@ -47,10 +47,11 @@ type RingBufferConfig struct {
 // must not allocate additional memory in the hot path.
 //
 // Example:
-//   buf := NewRingBuffer(RingBufferConfig{
-//       DurationSeconds: 10.0,
-//       SampleRate:      16000,
-//   })
+//
+//	buf := NewRingBuffer(RingBufferConfig{
+//	    DurationSeconds: 10.0,
+//	    SampleRate:      16000,
+//	})
 func NewRingBuffer(config RingBufferConfig) *RingBuffer {
 	size := int(config.DurationSeconds * float64(config.SampleRate))
 	if size <= 0 {
@@ -187,6 +188,37 @@ func (rb *RingBuffer) SnapshotLatest(sampleCount int) []float32 {
 	}
 
 	return result
+}
+
+// Read consumes samples from the buffer into the provided slice.
+// Advances the read position, freeing up space.
+//
+// Returns:
+//   - Number of samples actually read
+func (rb *RingBuffer) Read(out []float32) int {
+	rb.mutex.Lock()
+	defer rb.mutex.Unlock()
+
+	available := rb.Available()
+	if available == 0 {
+		return 0
+	}
+
+	toRead := len(out)
+	if toRead > available {
+		toRead = available
+	}
+
+	rPos := int(rb.readPos.Load())
+
+	// Copy samples
+	for i := 0; i < toRead; i++ {
+		out[i] = rb.data[rPos]
+		rPos = (rPos + 1) % rb.size
+	}
+
+	rb.readPos.Store(int64(rPos))
+	return toRead
 }
 
 // Available returns the number of samples currently buffered.

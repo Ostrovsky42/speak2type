@@ -15,14 +15,12 @@ Speak2Type follows a **CSP (Communicating Sequential Processes)** design pattern
 Microphone → AudioService → RingBuffer → VADService → ASRService → TextMerger → Output
 ```
 
-### Core Services
-
 | Service | Status | Description |
 |---------|--------|-------------|
 | **AudioService** | ✅ Complete | Zero-allocation audio capture (malgo/miniaudio) |
 | **RingBuffer** | ✅ Complete | Thread-safe circular buffer with overflow handling |
-| **VADService** | 🚧 Planned | Silero VAD via ONNX Runtime |
-| **ASRService** | 🚧 Planned | Whisper.cpp multilingual (RU/EN support) |
+| **VADService** | ✅ Complete | Silero VAD via ONNX Runtime |
+| **ASRService** | ✅ Complete | Whisper.cpp multilingual (RU/EN support) |
 | **TextMerger** | 🚧 Planned | Stability-based text merging (LCS algorithm) |
 | **SessionOrchestrator** | 🚧 Planned | State machine coordinating all services |
 
@@ -117,41 +115,39 @@ stats := service.GetStats()
 - PortAudio/ALSA (Linux) — auto-handled by malgo
 
 ### Build
-
 ```bash
 # Clone repository
 cd /path/to/speak2type
 
-# Build mic-test demo
-go build -o bin/mic-test ./cmd/mic-test
+# VAD Demo (Voice Activity Detection)
+LD_LIBRARY_PATH=. go run cmd/vad-test/main.go -device-index 0
 
-# Run audio test
-./bin/mic-test
+# ASR Demo (Speech Recognition)
+# Note: Requires setting up CGO paths for whisper.cpp (see below)
+go run cmd/asr-test/main.go -device-index 0 -lang ru
 ```
 
-### Expected Output
+### Environment Setup for ASR
+
+Since ASR uses `whisper.cpp`, you must set environment variables to link the library:
+
+```bash
+export BASE=$(pwd)/third_party/whisper.cpp
+export C_INCLUDE_PATH=$BASE/include:$BASE/ggml/include
+export LIBRARY_PATH=$BASE/build/src:$BASE/build/ggml/src
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$BASE/build/src:$BASE/build/ggml/src:$(pwd)
+```
+
+### Expected Output (ASR)
 
 ```
-🎤 Speak2Type Audio Test
-=====================
-
-📋 Available audio devices:
-  [0] Built-in Microphone (default)
-  [1] USB Microphone
-
-🔧 Configuration:
-  Sample Rate: 16000 Hz
-  Channels: 1 (mono)
-  Buffer: 30 ms
-  Ring Buffer: 10.0 seconds
-
-▶️  Starting audio capture...
-✅ Recording started!
-
-🎙️  Speak into your microphone...
-   Press Ctrl+C to stop
-
-📊 Stats: Uptime=4s | Callbacks=133 | Frames=63840 | Dropped=0.000% | Buffer=99.8%
+🗣️  Speak2Type ASR Test
+===================
+✅ Pipeline started (Gain: 1.0, Norm: 0.0, Logit: false). Speak...
+VAD: [0.8521] ████████░░ | 🔴 SPEAKING
+VAD: [0.1203] █░░░░░░░░░ | ⚫ SILENCE
+🚀 SUBMITTING
+📝 [ru]: Привет мир, это тестовая запись.
 ```
 
 ---
@@ -211,17 +207,17 @@ BenchmarkRingBuffer_Snapshot-8   100000     15200 ns/op  112000 B/op  1 allocs/o
 - [x] Mic-test demo
 - [x] Comprehensive tests
 
-### 🔄 Phase 2: Voice Activity Detection (IN PROGRESS)
-- [ ] ONNX Runtime Go bindings
-- [ ] Silero VAD model integration
-- [ ] Hysteresis gate logic
-- [ ] VAD performance tests
+### 🔄 Phase 2: Voice Activity Detection (COMPLETE)
+- [x] ONNX Runtime Go bindings
+- [x] Silero VAD model integration
+- [x] Hysteresis gate logic
+- [x] VAD performance tests
 
-### 📋 Phase 3: Speech Recognition (PLANNED)
-- [ ] whisper.cpp Go bindings
-- [ ] Multilingual model loader (RU/EN)
-- [ ] 7s sliding window processor
-- [ ] ASR accuracy tests (Russian)
+### 📋 Phase 3: Speech Recognition (COMPLETE)
+- [x] whisper.cpp Go bindings
+- [x] Multilingual model loader (RU/EN)
+- [x] 7s sliding window processor
+- [x] ASR accuracy tests (Russian)
 
 ### 📋 Phase 4: Text Stabilization (PLANNED)
 - [ ] LCS-based text merging

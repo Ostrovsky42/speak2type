@@ -5,6 +5,7 @@ package vad
 
 import (
 	"fmt"
+	"math"
 	"os"
 
 	onnxruntime "github.com/yalue/onnxruntime_go"
@@ -33,19 +34,33 @@ type VADService struct {
 
 // VADConfig defines VAD model parameters
 type VADConfig struct {
-	ModelPath  string  // Path to silero_vad.onnx
-	SampleRate int     // 16000 Hz (Whisper compatibility)
-	ChunkSize  int     // 512, 1024, or 1536 samples
-	Threshold  float32 // Probability threshold (0.0-1.0)
+	ModelPath    string  // Path to silero_vad.onnx
+	SampleRate   int     // 16000 Hz (Whisper compatibility)
+	ChunkSize    int     // 512, 1024, or 1536 samples
+	Threshold    float32 // Probability threshold (0.0-1.0)
+	DebugRMS     bool    // Print RMS/min/max for incoming chunks (debug only)
+	DebugOut     bool    // Print raw model outputs (debug only)
+	InputGain    float32 // Linear gain applied to input audio (default 1.0)
+	SingleLogit  bool    // Treat single-value output as a logit (apply sigmoid)
+	InvertOut    bool    // Invert final probability (prob = 1 - prob)
+	NormalizeRMS bool    // Normalize input RMS to TargetRMS before inference
+	TargetRMS    float32 // Target RMS when NormalizeRMS is true (e.g., 0.05)
 }
 
 // DefaultConfig returns production-ready VAD configuration
 func DefaultConfig() VADConfig {
 	return VADConfig{
-		ModelPath:  "models/silero_vad.onnx",
-		SampleRate: 16000,
-		ChunkSize:  512, // 32ms @ 16kHz (lowest latency)
-		Threshold:  0.5, // Balanced threshold
+		ModelPath:    "models/silero_vad.onnx",
+		SampleRate:   16000,
+		ChunkSize:    512, // 32ms @ 16kHz (lowest latency)
+		Threshold:    0.5, // Balanced threshold
+		DebugRMS:     false,
+		DebugOut:     false,
+		InputGain:    1.0,
+		SingleLogit:  false,
+		InvertOut:    false,
+		NormalizeRMS: false,
+		TargetRMS:    0.05,
 	}
 }
 
@@ -138,7 +153,8 @@ func (v *VADService) initTensors() error {
 		return fmt.Errorf("state_in tensor: %w", err)
 	}
 
-	// 4. Output Probability: [1, 1]
+	// 4. Output Probability: [1, 1] (common Silero export). We handle 1 or 2
+	// values in computeProbability to stay compatible with dual-output models.
 	outShape := onnxruntime.NewShape(1, 1)
 	outData := make([]float32, 1)
 	v.tOutput, err = onnxruntime.NewTensor(outShape, outData)
@@ -189,10 +205,47 @@ func (v *VADService) Process(chunk []float32) (float32, error) {
 			v.config.ChunkSize, len(chunk))
 	}
 
+	var rms float32
+	if v.config.DebugRMS || v.config.NormalizeRMS {
+		var sumSq float64
+		minVal := float32(1e9)
+		maxVal := float32(-1e9)
+
+		for _, s := range chunk {
+			sumSq += float64(s * s)
+			if s < minVal {
+				minVal = s
+			}
+			if s > maxVal {
+				maxVal = s
+			}
+		}
+
+		if len(chunk) > 0 {
+			rms = float32(sumSq / float64(len(chunk)))
+		}
+
+		if v.config.DebugRMS {
+			fmt.Printf("VAD DEBUG: len=%d rms=%.6f min=%.6f max=%.6f\n",
+				len(chunk), rms, minVal, maxVal)
+		}
+	}
+
 	// 1. Copy chunk data to input tensor
 	// GetData() returns a slice backed by C memory, so we copy into it
 	inputData := v.tInput.GetData()
-	copy(inputData, chunk)
+	gain := v.config.InputGain
+	if v.config.NormalizeRMS && rms > 0 {
+		gain *= v.config.TargetRMS / rms
+	}
+
+	if gain == 1.0 {
+		copy(inputData, chunk)
+	} else {
+		for i := range chunk {
+			inputData[i] = chunk[i] * gain
+		}
+	}
 
 	// 2. Run inference
 	if err := v.session.Run(); err != nil {
@@ -201,10 +254,18 @@ func (v *VADService) Process(chunk []float32) (float32, error) {
 
 	// 3. Get output probability
 	outputData := v.tOutput.GetData()
-	// Silero output is usually [batch, 1] -> [0] is prob
-	// If shape is [1, 2], [1] might be speech. But v4 is usually [1, 1].
-	// We'll assume index 0.
-	probability := outputData[0]
+	probability, err := computeProbability(outputData, v.config.SingleLogit)
+	if err != nil {
+		return 0, err
+	}
+
+	if v.config.InvertOut {
+		probability = 1 - probability
+	}
+
+	if v.config.DebugOut {
+		fmt.Printf("VAD RAW OUT: len=%d vals=%v prob=%.6f\n", len(outputData), outputData, probability)
+	}
 
 	// 4. Propagate state: Output -> Input for next step
 	// We must copy data from Out tensors to In tensors
@@ -242,6 +303,41 @@ func (v *VADService) Close() error {
 // GetConfig returns current VAD configuration.
 func (v *VADService) GetConfig() VADConfig {
 	return v.config
+}
+
+func computeProbability(outputData []float32, singleIsLogit bool) (float32, error) {
+	if len(outputData) == 0 {
+		return 0, fmt.Errorf("output tensor is empty")
+	}
+
+	switch len(outputData) {
+	case 1:
+		if singleIsLogit {
+			return sigmoid(outputData[0]), nil
+		}
+		// Most Silero exports already return probability in [0,1].
+		return outputData[0], nil
+	case 2:
+		// Silero v4/v5 often outputs logits as [non-speech, speech].
+		return softmax2(outputData[0], outputData[1]), nil
+	default:
+		// Fallback: use last element as-is.
+		return outputData[len(outputData)-1], nil
+	}
+}
+
+func sigmoid(x float32) float32 {
+	return 1 / (1 + float32(math.Exp(-float64(x))))
+}
+
+func softmax2(a, b float32) float32 {
+	max := a
+	if b > max {
+		max = b
+	}
+	expA := math.Exp(float64(a - max))
+	expB := math.Exp(float64(b - max))
+	return float32(expB / (expA + expB))
 }
 
 func validateConfig(config VADConfig) error {
