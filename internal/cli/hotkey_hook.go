@@ -44,13 +44,13 @@ func (h *HotkeyListener) Start() {
 			case <-h.stopChan:
 				return
 			case e := <-evChan:
-				// Check for F8.
-				// Depending on the OS, the Rawcode or Keychar might vary.
-				// In many hook impls, F8 is explicitly handled.
-				if e.Kind == hook.KeyDown && h.isTrigger(e) {
-					h.onPress()
-					// Small debounce to avoid multiple triggers
-					time.Sleep(200 * time.Millisecond)
+				if e.Kind == hook.KeyDown {
+					if h.isTrigger(e) {
+						fmt.Printf(" [Hotkey] Triggered: %s\n", h.triggerKey)
+						h.onPress()
+						// Debounce
+						time.Sleep(500 * time.Millisecond)
+					}
 				}
 			}
 		}
@@ -58,11 +58,10 @@ func (h *HotkeyListener) Start() {
 }
 
 func (h *HotkeyListener) isTrigger(e hook.Event) bool {
-	// Crude check - if user wants F8, we check common codes or names.
-	// hook.Event.Rawcode or Keychar.
-	// For now, let's just log and check for common F8 code (66 on some Linux, etc.)
-	// Simplest: use Register if gohook supports it, but Start/channel is more robust.
-	return true // Placeholder: in real use we'd match triggerKey string to event mapping
+	// On Linux (X11), F8 usually has Rawcode 74 or Keycode 66.
+	// We'll check for F8 (66) in Keycode or 74 in Rawcode.
+	// This is defensive.
+	return (e.Keycode == 66 || e.Rawcode == 74)
 }
 
 func (h *HotkeyListener) Stop() {

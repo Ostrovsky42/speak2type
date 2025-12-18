@@ -52,6 +52,10 @@ func DefaultGateConfig() GateConfig {
 	}
 }
 
+func (g *Gate) SetConfig(config GateConfig) {
+	g.config = config
+}
+
 // NewGate creates a new VAD gate with the given configuration.
 func NewGate(config GateConfig) *Gate {
 	now := time.Now()

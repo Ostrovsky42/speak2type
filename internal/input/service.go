@@ -17,6 +17,7 @@ type KeyboardInjector struct {
 	typingSpeed time.Duration
 	enabled     bool
 	isWayland   bool
+	conf        Config
 }
 
 // Config for KeyboardInjector
@@ -24,6 +25,10 @@ type Config struct {
 	TypingSpeed  time.Duration // Default: 10ms
 	Enabled      bool          // Default: true
 	ForceWayland bool          // Allow injection on Wayland despite risks
+	DryRun       bool          // If true, only log actions, don't execute
+	FocusDelay   time.Duration // Delay before paste (e.g. 100ms)
+	SettleDelay  time.Duration // Delay after write before Ctrl+V (e.g. 100ms)
+	PasteDelay   time.Duration // Delay after Ctrl+V before restore (e.g. 200ms)
 }
 
 // NewKeyboardInjector creates a new input injector.
@@ -36,9 +41,9 @@ func NewKeyboardInjector(cfg Config) (*KeyboardInjector, error) {
 	}
 
 	injector := &KeyboardInjector{
-		typingSpeed: cfg.TypingSpeed,
-		enabled:     cfg.Enabled,
-		isWayland:   isWayland,
+		enabled:   cfg.Enabled,
+		isWayland: isWayland,
+		conf:      cfg,
 	}
 
 	if isWayland && !cfg.ForceWayland {
@@ -60,6 +65,11 @@ func (s *KeyboardInjector) Type(text string) error {
 		return nil
 	}
 
+	if s.conf.DryRun {
+		log.Printf("[DRY-RUN] Would type: %q", text)
+		return nil
+	}
+
 	log.Printf("⌨️  Typing text: %q", text)
 	robotgo.TypeStr(text)
 	return nil
@@ -71,24 +81,24 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.enabled {
+	if s.conf.DryRun {
+		log.Printf("[DRY-RUN] Would paste: %q (restore=%v)", text, restoreClipboard)
 		return nil
 	}
 
-	if s.isWayland {
-		log.Println("⚠️  Wayland detected. Clipboard injection might be unreliable.")
+	// 0. Focus Delay
+	if s.conf.FocusDelay > 0 {
+		time.Sleep(s.conf.FocusDelay)
 	}
 
 	// 1. Save current clipboard if requested
 	var originalContent string
 	var err error
 	if restoreClipboard {
-		// ReadAll might fail or be empty, that's fine.
-		// On Linux this uses xclip/xsel.
 		originalContent, err = robotgo.ReadAll()
 		if err != nil {
 			log.Printf("⚠️  Failed to read clipboard for restore: %v", err)
-			restoreClipboard = false // Disable restore if read failed
+			restoreClipboard = false
 		}
 	}
 
@@ -97,26 +107,52 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	// 2. Set new content
 	robotgo.WriteAll(text)
 
-	// Wait a tiny bit for clipboard sync/manager to pick it up
-	time.Sleep(100 * time.Millisecond)
-
-	// 3. Trigger Paste (Ctrl+V / Cmd+V)
-	if runtime.GOOS == "darwin" {
-		robotgo.KeyTap("v", "command")
+	// 3. Settle delay
+	if s.conf.SettleDelay > 0 {
+		time.Sleep(s.conf.SettleDelay)
 	} else {
-		robotgo.KeyTap("v", "control")
+		time.Sleep(150 * time.Millisecond) // Slightly more conservative
 	}
 
-	// Wait for paste to likely complete before restoring
-	time.Sleep(200 * time.Millisecond)
+	// 4. Trigger Paste (Ctrl+V / Cmd+V)
+	if runtime.GOOS == "darwin" {
+		robotgo.KeyDown("command")
+		time.Sleep(20 * time.Millisecond)
+		robotgo.KeyTap("v")
+		time.Sleep(20 * time.Millisecond)
+		robotgo.KeyUp("command")
+	} else {
+		robotgo.KeyDown("control")
+		time.Sleep(20 * time.Millisecond)
+		robotgo.KeyTap("v")
+		time.Sleep(20 * time.Millisecond)
+		robotgo.KeyUp("control")
+	}
 
-	// 4. Restore original content
+	// 5. Paste delay
+	if s.conf.PasteDelay > 0 {
+		time.Sleep(s.conf.PasteDelay)
+	} else {
+		time.Sleep(300 * time.Millisecond) // Slightly more conservative
+	}
+
+	// 6. Restore original content
 	if restoreClipboard {
 		robotgo.WriteAll(originalContent)
 		log.Println("📋 Restored original clipboard content")
 	}
 
 	return nil
+}
+
+// GetActiveWindow returns a string identifying the current foreground window.
+// It uses title or PID depending on what robotgo provides best.
+func (s *KeyboardInjector) GetActiveWindow() string {
+	title := robotgo.GetTitle()
+	if title != "" {
+		return title
+	}
+	return fmt.Sprintf("PID:%d", robotgo.GetPid())
 }
 
 // Enable toggles injection functionality.

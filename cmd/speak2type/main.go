@@ -25,11 +25,18 @@ func main() {
 		os.Exit(cli.RunSession(args))
 	case "inject-test":
 		os.Exit(cli.RunInjectTest(args))
+	case "stop":
+		os.Exit(cli.RunStop())
+	case "status":
+		os.Exit(cli.RunStatus())
+	case "install-service":
+		os.Exit(cli.RunInstallService())
+	case "tray", "ui":
+		handleTrayCommand()
 	case "version":
-		fmt.Println("Speak2Type v0.9.0 (Phase 9)")
+		fmt.Println("Speak2Type Voice Input v0.9.0")
 	default:
-		fmt.Printf("Unknown command: %s\n", command)
-		printUsage()
+		fmt.Println("Usage: speak2type [run|doctor|inject-test|stop|status|install-service|version]")
 		os.Exit(1)
 	}
 }

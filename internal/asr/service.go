@@ -163,6 +163,8 @@ func (s *ASRService) processWindow(window AudioWindow) {
 	params.SetPrintProgress(false)
 	params.SetPrintRealtime(false)
 	params.SetPrintTimestamps(false)
+	params.SetTranslate(false) // Never translate unless explicitly requested (we don't have a flag for it yet)
+	params.SetNoContext(false) // Allow using previous context if available in the model
 
 	// Language handling
 	langID := -1 // Auto
@@ -201,9 +203,15 @@ func (s *ASRService) processWindow(window AudioWindow) {
 	}
 
 	if fullText != "" {
+		detectedLang := s.config.LanguageMode
+		if s.config.LanguageMode == "auto" {
+			langID := s.context.Whisper_full_lang_id()
+			detectedLang = whisper.Whisper_lang_str(langID)
+		}
+
 		s.results <- TranscriptionChunk{
 			Text:     fullText,
-			Language: s.config.LanguageMode,
+			Language: detectedLang,
 			StartSec: start,
 			EndSec:   end,
 			Prob:     1.0,

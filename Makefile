@@ -46,14 +46,14 @@ doctor:
 build: check-env
 	@echo "🔨 Building Speak2Type with tags: $(BUILD_TAGS)..."
 	@mkdir -p bin
-	go build -tags "$(BUILD_TAGS)" -ldflags "-r $(LIB_DIR)" -o bin/speak2type cmd/speak2type/main.go
+	go build -tags "$(BUILD_TAGS)" -ldflags "-r $(LIB_DIR)" -o bin/speak2type ./cmd/speak2type
 	@echo "✨ Build complete. Binary: ./bin/speak2type"
 
 dist: check-env
 	@echo "📦 Packaging for distribution..."
 	@rm -rf dist && mkdir -p dist/lib dist/models
 	# 1. Build with $ORIGIN/lib rpath
-	go build -tags "$(BUILD_TAGS)" -ldflags "-r \$$ORIGIN/lib" -o dist/speak2type cmd/speak2type/main.go
+	go build -tags "$(BUILD_TAGS)" -ldflags "-r \$$ORIGIN/lib" -o dist/speak2type ./cmd/speak2type
 	# 2. Copy Libs
 	cp $(LIB_DIR)/*.so* dist/lib/
 	# 3. Copy Models

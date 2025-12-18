@@ -8,6 +8,7 @@ import (
 	"github.com/Ostrovsky42/speak2type/internal/asr"
 	"github.com/Ostrovsky42/speak2type/internal/audio"
 	"github.com/Ostrovsky42/speak2type/internal/input"
+	"github.com/Ostrovsky42/speak2type/internal/ipc"
 	"github.com/Ostrovsky42/speak2type/internal/merger"
 	"github.com/Ostrovsky42/speak2type/internal/vad"
 )
@@ -54,11 +55,15 @@ type Orchestrator struct {
 	deps Dependencies
 	conf Config
 
-	state State
-	mode  Mode
+	state   State
+	mode    Mode
+	lang    string
+	profile ProfileConfig
 
 	events chan Event
 	stop   chan struct{} // Signal to stop the main loop
+
+	ipc *ipc.Server
 
 	// Pipeline state
 	speechBuffer []float32
@@ -70,6 +75,8 @@ type Orchestrator struct {
 	// Pre-roll buffer (stores recent silence chunks)
 	preRollBuffer [][]float32
 	preRollLimit  int
+
+	focusWindow string // Identifier of the window active when session started
 }
 
 // NewOrchestrator creates a new session orchestrator.
@@ -82,6 +89,7 @@ func NewOrchestrator(cfg Config, deps Dependencies) *Orchestrator {
 		stop:   make(chan struct{}),
 		// 500ms pre-roll: 500ms / 32ms (approx) = ~16 chunks
 		preRollLimit: 16,
+		profile:      GetProfile(ProfileDictation),
 	}
 }
 
@@ -100,6 +108,70 @@ func (o *Orchestrator) Stop() {
 	close(o.stop)
 }
 
+// SetIPC registers an IPC server for broadcasting state
+func (o *Orchestrator) SetIPC(s *ipc.Server) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ipc = s
+}
+
+func (o *Orchestrator) SetProfile(t ProfileType) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	p := GetProfile(t)
+	o.profile = p
+	o.deps.Gate.SetConfig(p.VAD)
+	o.deps.Merger.SetMinStability(p.MergerMinStability)
+
+	if o.ipc != nil {
+		o.ipc.Broadcast("state", o.getIPCStateLocked())
+	}
+}
+
+// GetIPCState returns the current state in IPC format
+func (o *Orchestrator) GetIPCState() ipc.StateInfo {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.getIPCStateLocked()
+}
+
+func (o *Orchestrator) getIPCStateLocked() ipc.StateInfo {
+	var stateStr string
+	switch o.state {
+	case StateIdle:
+		stateStr = "idle"
+	case StateListening:
+		stateStr = "listening"
+	case StateProcessing:
+		stateStr = "processing"
+	default:
+		stateStr = "unknown"
+	}
+
+	return ipc.StateInfo{
+		State:       stateStr,
+		Recording:   o.state == StateListening,
+		Language:    o.lang,
+		Profile:     string(o.profile.Name),
+		FocusWindow: o.focusWindow,
+	}
+}
+
+func (o *Orchestrator) Toggle() error {
+	o.mu.Lock()
+	state := o.state
+	o.mu.Unlock()
+
+	if state == StateIdle {
+		return o.StartSession(ModeContinuous)
+	} else if state == StateListening {
+		o.StopSession()
+		return nil
+	}
+	return fmt.Errorf("cannot toggle in state: %s", state)
+}
+
 // StartSession begins a new recording session.
 func (o *Orchestrator) StartSession(mode Mode) error {
 	o.mu.Lock()
@@ -115,6 +187,12 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 	o.speechBuffer = nil
 	o.isSpeaking = false
 	o.preRollBuffer = nil
+
+	// Capture focus window
+	if o.deps.Input != nil {
+		o.focusWindow = o.deps.Input.GetActiveWindow()
+		fmt.Printf(" [Orch] Focus captured: %s\n", o.focusWindow)
+	}
 
 	// Start Audio
 	if err := o.deps.Audio.Start(); err != nil {
@@ -140,15 +218,8 @@ func (o *Orchestrator) StopSession() {
 	// Stop Audio immediately to stop capturing
 	o.deps.Audio.Stop()
 
-	// Flush any remaining speech buffer to ASR
-	if len(o.speechBuffer) > 0 {
-		o.deps.ASR.Submit(asr.AudioWindow{Samples: o.speechBuffer})
-		o.speechBuffer = nil
-	}
-
-	// In a real app, we might wait for ASR to drain.
-	// For now, let's just transition to Idle after a brief pause or immediately.
-	// We'll let the loop handle draining results.
+	// Flush any remaining speech buffer up to ASR
+	o.flushAudioLocked()
 
 	o.setState(StateIdle)
 }
@@ -156,18 +227,20 @@ func (o *Orchestrator) StopSession() {
 // setState updates the state and emits an event. (Caller must hold lock)
 func (o *Orchestrator) setState(s State) {
 	o.state = s
-	o.events <- Event{
+	evt := Event{
 		Type:  EventStateChange,
 		State: s,
+	}
+	o.events <- evt
+
+	if o.ipc != nil {
+		o.ipc.Broadcast("state", o.getIPCStateLocked())
 	}
 }
 
 // loop is the main coordination loop.
 func (o *Orchestrator) loop() {
-	ticker := time.NewTicker(20 * time.Millisecond) // 20ms poll (adjust to chunk size?)
-	// Actually, best to poll faster or match chunk size.
-	// 512 samples @ 16kHz = 32ms.
-
+	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
 	chunk := make([]float32, o.conf.ChunkSize)
@@ -178,24 +251,29 @@ func (o *Orchestrator) loop() {
 			return
 
 		case res := <-o.deps.ASR.Results():
-			// Handle ASR output
 			if res.Error != nil {
 				o.events <- Event{Type: EventError, Error: res.Error}
 				continue
 			}
-
-			// Empty text handling?
 			if res.Text == "" {
 				continue
 			}
 
-			// Merge
 			committed, tentative := o.deps.Merger.Process(res.Text)
 
-			// Inject Input if we have a service and committed text
 			if o.deps.Input != nil && committed != "" {
-				// Use Paste() for reliability with RU/EN. Restore clipboard based on config.
-				o.deps.Input.Paste(committed+" ", !o.conf.NoRestore)
+				currentWindow := o.deps.Input.GetActiveWindow()
+				if currentWindow == o.focusWindow {
+					fmt.Printf(" [Orch] Focus match: %q. Pasting...\n", currentWindow)
+					o.deps.Input.Paste(committed+" ", !o.conf.NoRestore)
+				} else {
+					fmt.Printf(" [Orch] Focus mismatch: %q != %q\n", currentWindow, o.focusWindow)
+					o.events <- Event{
+						Type:  EventError,
+						Text:  committed,
+						Error: fmt.Errorf("focus guard: window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow),
+					}
+				}
 			}
 
 			o.mu.Lock()
@@ -207,13 +285,15 @@ func (o *Orchestrator) loop() {
 				o.flushMerger()
 			}
 
-			// Emit update
 			full := committed
 			if tentative != "" {
 				full += " " + tentative
 			}
 
 			state := o.currentState()
+			// Log lang/comm/tent for debugging
+			fmt.Printf(" [Orch] Lang: [%s] Comm: %q Tent: %q\n", res.Language, committed, tentative)
+
 			o.events <- Event{
 				Type:      EventFullText,
 				Text:      full,
@@ -223,65 +303,54 @@ func (o *Orchestrator) loop() {
 			}
 
 		case <-ticker.C:
-			// Audio Processing Loop
-
-			// Only process if Listening
 			o.mu.Lock()
-			state := o.state
-			o.mu.Unlock()
-
-			if state != StateListening {
+			if o.state != StateListening {
+				o.mu.Unlock()
 				continue
 			}
 
-			// Check buffer availability
 			stats := o.deps.Audio.GetStats()
 			if stats.BufferStats.Available < o.conf.ChunkSize {
+				o.mu.Unlock()
 				continue
 			}
 
-			// Read Audio
 			n := o.deps.Audio.Read(chunk)
 			if n < o.conf.ChunkSize {
+				o.mu.Unlock()
 				continue
 			}
 
-			// Run VAD
+			// Run VAD (Can run under lock as it's fast)
 			prob, err := o.deps.VAD.Process(chunk)
 			if err != nil {
-				continue // log?
+				o.mu.Unlock()
+				continue
 			}
 
 			_, active := o.deps.Gate.Process(prob)
 
-			// Accumulate Speech
 			if active {
 				if !o.isSpeaking {
+					fmt.Println(" [Orch] Speech START detected")
 					o.isSpeaking = true
-
-					// Prepend pre-roll!
+					// Prepend pre-roll
 					for _, pr := range o.preRollBuffer {
 						o.speechBuffer = append(o.speechBuffer, pr...)
 					}
 					o.preRollBuffer = nil
 				}
-
-				// Append current chunk
 				o.speechBuffer = append(o.speechBuffer, chunk...)
-
-				// Force split if buffer gets too large (e.g. 7s)
 				if len(o.speechBuffer) > 16000*7 {
-					o.flushAudio()
+					o.flushAudioLocked()
 				}
-
 			} else {
 				if o.isSpeaking {
-					// Just stopped speaking
+					fmt.Println(" [Orch] Speech END detected")
 					o.isSpeaking = false
 					o.silenceStart = time.Now()
 				}
 
-				// Accumulate Pre-roll during silence
 				c := make([]float32, len(chunk))
 				copy(c, chunk)
 				o.preRollBuffer = append(o.preRollBuffer, c)
@@ -289,31 +358,32 @@ func (o *Orchestrator) loop() {
 					o.preRollBuffer = o.preRollBuffer[1:]
 				}
 
-				// If we have data and silence timeout passed, submit
 				if len(o.speechBuffer) > 0 && time.Since(o.silenceStart) > 500*time.Millisecond {
-					o.flushAudio()
+					o.flushAudioLocked()
 				}
 			}
+			o.mu.Unlock()
 		}
 	}
 }
 
 // flushAudio submits the current buffer to ASR and clears it.
 func (o *Orchestrator) flushAudio() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.flushAudioLocked()
+}
+
+func (o *Orchestrator) flushAudioLocked() {
 	if len(o.speechBuffer) == 0 {
 		return
 	}
+
 	// Copy buffer to avoid race (ASR runs async)
-	// Or ASR.Submit can handle copy. Let's assume Submit needs ownership or we copy.
-	// ASRService.Submit takes AudioWindow{Samples []float32}.
-	// We should copy.
 	buf := make([]float32, len(o.speechBuffer))
 	copy(buf, o.speechBuffer)
 
-	o.mu.Lock()
 	o.pendingASR++
-	o.mu.Unlock()
-
 	o.deps.ASR.Submit(asr.AudioWindow{Samples: buf})
 	o.speechBuffer = nil
 }
@@ -322,7 +392,18 @@ func (o *Orchestrator) flushMerger() {
 	flushed := o.deps.Merger.Flush()
 	if flushed != "" {
 		if o.deps.Input != nil {
-			o.deps.Input.Paste(flushed+" ", !o.conf.NoRestore)
+			currentWindow := o.deps.Input.GetActiveWindow()
+			if currentWindow == o.focusWindow {
+				fmt.Printf(" [Orch] Focus match (flush): %q. Pasting...\n", currentWindow)
+				o.deps.Input.Paste(flushed+" ", !o.conf.NoRestore)
+			} else {
+				fmt.Printf(" [Orch] Focus mismatch (flush): %q != %q\n", currentWindow, o.focusWindow)
+				o.events <- Event{
+					Type:  EventError,
+					Text:  flushed,
+					Error: fmt.Errorf("focus guard (flush): window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow),
+				}
+			}
 		}
 		o.events <- Event{
 			Type:      EventFullText,

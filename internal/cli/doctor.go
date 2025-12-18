@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
 
+	"github.com/go-vgo/robotgo"
 	"github.com/Ostrovsky42/speak2type/internal/audio"
 )
 
@@ -49,12 +51,37 @@ func RunDoctor() int {
 		} else {
 			printOk(fmt.Sprintf("DISPLAY=%s", display))
 		}
+
+		xauth := os.Getenv("XAUTHORITY")
+		if xauth == "" {
+			printWarn("XAUTHORITY is not set. Might cause issues with some X11 apps.")
+		} else {
+			printOk(fmt.Sprintf("XAUTHORITY found: %s", xauth))
+		}
+
+		// Clipboard check
+		printSection("2. Clipboard Access")
+		original, err := robotgo.ReadAll()
+		if err != nil {
+			printFail(fmt.Sprintf("Failed to read clipboard: %v", err))
+			failCount++
+		} else {
+			printOk("Clipboard READ works.")
+			err = robotgo.WriteAll(original)
+			if err != nil {
+				printFail(fmt.Sprintf("Failed to write clipboard: %v", err))
+				failCount++
+			} else {
+				printOk("Clipboard WRITE works.")
+			}
+		}
+
 	} else if goos == "darwin" {
 		printOk("macOS detected. Ensure Accessibility Permissions are granted.")
 	}
 
-	// 2. Libraries
-	printSection("2. Dependencies")
+	// 3. Libraries
+	printSection("3. Dependencies")
 	libPath := "third_party/lib/libonnxruntime.so"
 	if _, err := os.Stat(libPath); err == nil {
 		printOk(fmt.Sprintf("ONNX Runtime found: %s", libPath))
@@ -63,13 +90,13 @@ func RunDoctor() int {
 		failCount++
 	}
 
-	// 3. Models
-	printSection("3. Models")
+	// 4. Models
+	printSection("4. Models")
 	checkModel("Silero VAD v4", "models/silero_vad_v4.onnx", MD5_SileroV4, &failCount)
 	checkModel("Whisper GGML", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
 
-	// 4. Audio
-	printSection("4. Audio Stack")
+	// 5. Audio
+	printSection("5. Audio Stack")
 	devices, err := audio.ListDevices(context.Background())
 	if err != nil {
 		printFail(fmt.Sprintf("Failed to list audio devices: %v", err))
@@ -83,6 +110,17 @@ func RunDoctor() int {
 	}
 
 	// Summary
+	// 6. Systray Dependencies
+	fmt.Println("\n🔹 6. Systray Dependencies")
+	cmd := exec.Command("pkg-config", "--exists", "ayatana-appindicator3-0.1")
+	if err := cmd.Run(); err != nil {
+		fmt.Println("   ❌ libayatana-appindicator3-dev is missing.")
+		fmt.Println("      Note: 'speak2type tray' requires this for compilation.")
+		fmt.Println("      Fix: sudo apt install libayatana-appindicator3-dev")
+	} else {
+		fmt.Println("   ✅ libayatana-appindicator3-dev found.")
+	}
+
 	fmt.Println("\n---------------------------------------------------")
 	if failCount == 0 {
 		fmt.Println("✅ SYSTEM CHECK PASSED. You are ready.")

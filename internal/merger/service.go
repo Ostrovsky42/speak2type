@@ -147,6 +147,12 @@ func (m *MergerService) Flush() string {
 }
 
 // Reset clears the state (e.g. after long silence).
+func (m *MergerService) SetMinStability(s int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.minStability = s
+}
+
 func (m *MergerService) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
