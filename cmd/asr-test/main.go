@@ -25,6 +25,8 @@ func main() {
 	singleLogit := flag.Bool("single-logit", false, "treat VAD output as logit (apply sigmoid)")
 	gain := flag.Float64("gain", 1.0, "linear gain applied before VAD")
 	normRMS := flag.Float64("norm-rms", 0, "normalize RMS to this target (0 = disabled)")
+	bypassVAD := flag.Bool("bypass-vad", false, "bypass VAD and submit all audio to ASR")
+	modelPath := flag.String("model", "models/silero_vad.onnx", "path to silero_vad.onnx")
 	flag.Parse()
 
 	// List devices
@@ -55,6 +57,7 @@ func main() {
 
 	// 2. Init VAD
 	vadConfig := vad.DefaultConfig()
+	vadConfig.ModelPath = *modelPath
 	vadConfig.SingleLogit = *singleLogit
 	vadConfig.InputGain = float32(*gain)
 	if *normRMS > 0 {
@@ -138,11 +141,19 @@ func main() {
 			}
 
 			// VAD
-			prob, err := vadService.Process(chunk)
-			if err != nil {
-				continue
+			var prob float32
+			var active bool
+			if !*bypassVAD {
+				prob, err = vadService.Process(chunk)
+				if err != nil {
+					continue
+				}
+				_, active = gate.Process(prob)
+			} else {
+				// In bypass mode, we consider it "active" if there is any signal
+				active = true
+				prob = 0.5 // dummy
 			}
-			_, active := gate.Process(prob)
 
 			// Visual feedback (Live probability)
 			bars := int(prob * 10)

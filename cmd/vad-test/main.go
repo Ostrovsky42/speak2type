@@ -36,23 +36,37 @@ func main() {
 	gateStart := flag.Float64("gate-start", 0.5, "gate start threshold (prob >= start opens speech)")
 	gateEnd := flag.Float64("gate-end", 0.35, "gate end threshold (prob < end closes speech)")
 	normRMS := flag.Float64("norm-rms", 0, "normalize chunk RMS to this target before VAD (0 = disabled)")
+	listDevices := flag.Bool("list-devices", false, "list available audio input devices and exit")
+	modelPath := flag.String("model", "models/silero_vad.onnx", "path to silero_vad.onnx")
 	flag.Parse()
 
-	// List devices (match mic-test output for easy comparison)
-	fmt.Println("\n📋 Available audio devices:")
-	devices, err := audio.ListDevices(context.Background())
-	if err != nil {
-		panic(fmt.Sprintf("Failed to list devices: %v", err))
+	// List devices logic
+	if *listDevices {
+		fmt.Println("\n📋 Available audio devices:")
+		devices, err := audio.ListDevices(context.Background())
+		if err != nil {
+			panic(fmt.Sprintf("Failed to list devices: %v", err))
+		}
+		for i, dev := range devices {
+			status := ""
+			if dev.IsDefault {
+				status = " (default)"
+			}
+			fmt.Printf("  [%d] %s%s\n", i, dev.Name, status)
+		}
+		return
 	}
-	for _, dev := range devices {
-		fmt.Printf("  %s\n", dev.String())
-	}
-	fmt.Println()
 
 	// 1. Initialize Audio Service
 	audioConfig := audio.DefaultConfig()
 	audioConfig.SampleRate = uint32(*sampleRate)
 	audioConfig.BufferMS = uint32((*chunkSize * 1000) / *sampleRate) // match chunk duration
+
+	// Re-fetch devices for selection logic
+	devices, err := audio.ListDevices(context.Background())
+	if err != nil {
+		fmt.Printf("⚠️  Failed to list devices: %v\n", err)
+	}
 
 	if len(devices) > 0 {
 		selected := resolveDevice(devices, *deviceIndex)
@@ -75,7 +89,7 @@ func main() {
 
 	// 2. Initialize VAD Service
 	vadConfig := vad.DefaultConfig()
-	vadConfig.ModelPath = "models/silero_vad.onnx"
+	vadConfig.ModelPath = *modelPath
 	vadConfig.SampleRate = *sampleRate
 	vadConfig.ChunkSize = *chunkSize
 	vadConfig.DebugRMS = *debugRMS
