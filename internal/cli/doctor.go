@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -17,7 +17,8 @@ const (
 	MD5_GGMLBase = "335f34f382e396519b6359d32c786317"
 )
 
-func main() {
+// RunDoctor executes the diagnostics.
+func RunDoctor() int {
 	failCount := 0
 
 	printHeader("🩺 Speak2Type System Doctor")
@@ -57,8 +58,6 @@ func main() {
 	libPath := "third_party/lib/libonnxruntime.so"
 	if _, err := os.Stat(libPath); err == nil {
 		printOk(fmt.Sprintf("ONNX Runtime found: %s", libPath))
-		// We could try to LoadLibrary here if we used CGO directly,
-		// but checking existence is a good proxy for now given we use run_env.sh
 	} else {
 		printFail(fmt.Sprintf("ONNX Runtime MISSING at %s", libPath))
 		failCount++
@@ -87,12 +86,10 @@ func main() {
 	fmt.Println("\n---------------------------------------------------")
 	if failCount == 0 {
 		fmt.Println("✅ SYSTEM CHECK PASSED. You are ready.")
-		fmt.Println("   Run: ./scripts/run_session.sh -device-index 0")
-		os.Exit(0)
+		return 0
 	} else {
 		fmt.Printf("❌ SYSTEM CHECK FAILED with %d errors.\n", failCount)
-		fmt.Println("   Review the errors above and run 'make deps' or install packages.")
-		os.Exit(1)
+		return 1
 	}
 }
 

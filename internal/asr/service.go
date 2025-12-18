@@ -203,10 +203,10 @@ func (s *ASRService) processWindow(window AudioWindow) {
 	if fullText != "" {
 		s.results <- TranscriptionChunk{
 			Text:     fullText,
-			Language: s.config.LanguageMode, // Or detect from Whisper_full_lang_id()
+			Language: s.config.LanguageMode,
 			StartSec: start,
 			EndSec:   end,
-			Prob:     1.0, // Placeholder, need token probs for real score
+			Prob:     1.0,
 		}
 	}
 }

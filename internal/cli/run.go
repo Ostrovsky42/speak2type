@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/Ostrovsky42/speak2type/internal/asr"
 	"github.com/Ostrovsky42/speak2type/internal/audio"
@@ -16,16 +15,20 @@ import (
 	"github.com/Ostrovsky42/speak2type/internal/vad"
 )
 
-func main() {
-	fmt.Println("🎹 Speak2Type Session Orchestrator Demo")
-	fmt.Println("=====================================")
+// RunSession executes the main session loop.
+func RunSession(args []string) int {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	deviceIndex := fs.Int("device-index", -1, "capture device index")
+	lang := fs.String("lang", "ru", "ASR language")
+	modelPath := fs.String("model", "models/silero_vad_v4.onnx", "path to silero_vad.onnx")
+	singleLogit := fs.Bool("single-logit", false, "treat VAD output as logit")
+	forceWayland := fs.Bool("force-wayland-inject", false, "allow text injection on Wayland (risky)")
+	noRestore := fs.Bool("no-restore", false, "don't restore clipboard after paste")
 
-	// Flags
-	deviceIndex := flag.Int("device-index", -1, "capture device index")
-	lang := flag.String("lang", "ru", "ASR language")
-	modelPath := flag.String("model", "models/silero_vad.onnx", "path to silero_vad.onnx")
-	singleLogit := flag.Bool("single-logit", false, "treat VAD output as logit")
-	flag.Parse()
+	fs.Parse(args)
+
+	fmt.Println("🎹 Speak2Type Session Orchestrator")
+	fmt.Println("===============================")
 
 	// 1. Init Audio
 	fmt.Println("Initializing Audio...")
@@ -38,7 +41,8 @@ func main() {
 
 	audioSvc, err := audio.NewAudioService(audioConfig)
 	if err != nil {
-		panic(err)
+		fmt.Printf("❌ Audio Error: %v\n", err)
+		return 1
 	}
 	defer audioSvc.Close()
 
@@ -49,7 +53,8 @@ func main() {
 	vadConfig.SingleLogit = *singleLogit
 	vadSvc, err := vad.NewVADService(vadConfig)
 	if err != nil {
-		panic(err)
+		fmt.Printf("❌ VAD Error: %v\n", err)
+		return 1
 	}
 	defer vadSvc.Close()
 
@@ -63,7 +68,8 @@ func main() {
 
 	asrSvc, err := asr.NewASRService(asrConfig)
 	if err != nil {
-		panic(fmt.Sprintf("ASR Init Failed: %v", err))
+		fmt.Printf("❌ ASR Error: %v\n", err)
+		return 1
 	}
 	defer asrSvc.Stop()
 	asrSvc.Start()
@@ -74,7 +80,11 @@ func main() {
 
 	// 5. Init Input Service
 	fmt.Println("Initializing Input Injector...")
-	inputSvc, err := input.NewKeyboardInjector()
+	inputConfig := input.Config{
+		Enabled:      true,
+		ForceWayland: *forceWayland,
+	}
+	inputSvc, err := input.NewKeyboardInjector(inputConfig)
 	if err != nil {
 		fmt.Printf("  ⚠️  Input Injector Warning: %v (continuing with text-only mode)\n", err)
 	}
@@ -93,6 +103,7 @@ func main() {
 	orchConfig := session.Config{
 		SampleRate: 16000,
 		ChunkSize:  vadConfig.ChunkSize,
+		NoRestore:  *noRestore,
 	}
 
 	orch := session.NewOrchestrator(orchConfig, deps)
@@ -103,7 +114,6 @@ func main() {
 	fmt.Println("\n✅ System Ready.")
 	fmt.Println("Commands:")
 	fmt.Println("  [Enter]    Toggle Recording (Continuous Mode)")
-	fmt.Println("  hold       Simulate 'Hold to Record' (Quick Note) - NOT IMPLEMENTED in CLI easy way")
 	fmt.Println("  exit/quit  Exit")
 	fmt.Println("---------------------------------------------------")
 
@@ -114,8 +124,6 @@ func main() {
 			case session.EventStateChange:
 				fmt.Printf("\n🔄 State -> %s\n", evt.State)
 			case session.EventFullText:
-				// Clear line/redraw? For now just print updates cleanly.
-				// fmt.Printf("\r\033[K%s", evt.Text)
 				fmt.Printf("\r\033[K📝 %s", evt.Text)
 			case session.EventError:
 				fmt.Printf("\n❌ Error: %v\n", evt.Error)
@@ -123,8 +131,29 @@ func main() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// 8. Hotkey Listener (F8)
 	isRecording := false
+	toggleFunc := func() {
+		if !isRecording {
+			fmt.Println("\n▶️  [Hotkey] Starting Session...")
+			if err := orch.StartSession(session.ModeContinuous); err != nil {
+				fmt.Printf("Failed: %v\n", err)
+			} else {
+				isRecording = true
+			}
+		} else {
+			fmt.Println("\n⏹️  [Hotkey] Stopping Session...")
+			orch.StopSession()
+			isRecording = false
+		}
+	}
+
+	// Start listener in background
+	hl := NewHotkeyListener("f8", toggleFunc)
+	hl.Start()
+	defer hl.Stop()
+
+	scanner := bufio.NewScanner(os.Stdin)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -133,22 +162,8 @@ func main() {
 			break
 		}
 
-		// Toggle logic
-		if !isRecording {
-			fmt.Println("▶️  Starting Session...")
-			if err := orch.StartSession(session.ModeContinuous); err != nil {
-				fmt.Printf("Failed to start: %v\n", err)
-			} else {
-				isRecording = true
-			}
-		} else {
-			fmt.Println("\n⏹️  Stopping Session...")
-			orch.StopSession()
-			isRecording = false
-			fmt.Println("Waiting for finalization...")
-			// In real app, we'd wait for StateIdle event
-			time.Sleep(1 * time.Second)
-			fmt.Println("Done.")
-		}
+		// Toggle logic (Enter key)
+		toggleFunc()
 	}
+	return 0
 }

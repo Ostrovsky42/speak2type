@@ -16,6 +16,7 @@ import (
 type Config struct {
 	SampleRate int
 	ChunkSize  int
+	NoRestore  bool
 }
 
 // Dependencies aggregates the services required by the orchestrator.
@@ -63,6 +64,12 @@ type Orchestrator struct {
 	speechBuffer []float32
 	isSpeaking   bool
 	silenceStart time.Time // Track silence duration
+
+	pendingASR int // Counter for in-flight ASR jobs
+
+	// Pre-roll buffer (stores recent silence chunks)
+	preRollBuffer [][]float32
+	preRollLimit  int
 }
 
 // NewOrchestrator creates a new session orchestrator.
@@ -73,6 +80,8 @@ func NewOrchestrator(cfg Config, deps Dependencies) *Orchestrator {
 		state:  StateIdle,
 		events: make(chan Event, 100),
 		stop:   make(chan struct{}),
+		// 500ms pre-roll: 500ms / 32ms (approx) = ~16 chunks
+		preRollLimit: 16,
 	}
 }
 
@@ -105,6 +114,7 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 	o.deps.Merger.Reset()
 	o.speechBuffer = nil
 	o.isSpeaking = false
+	o.preRollBuffer = nil
 
 	// Start Audio
 	if err := o.deps.Audio.Start(); err != nil {
@@ -184,17 +194,17 @@ func (o *Orchestrator) loop() {
 
 			// Inject Input if we have a service and committed text
 			if o.deps.Input != nil && committed != "" {
-				// We append a space for continuous dictation flow?
-				// Or leave it valid. It's safer to type exactly what Merger gives.
-				// Merger usually gives "word" or "word word".
-				// A space separator is often needed if we are dictating sentences.
-				// Let's rely on the Merger to not include trailing spaces, but we might want one.
-				// Simple heuristic: always append space?
+				// Use Paste() for reliability with RU/EN. Restore clipboard based on config.
+				o.deps.Input.Paste(committed+" ", !o.conf.NoRestore)
+			}
 
-				// Issue: if we just finished a sentence, we might not want a space?
-				// For now: bare inject + space.
-				// Use Paste() for reliability with RU/EN. Restore clipboard = true.
-				o.deps.Input.Paste(committed+" ", true)
+			o.mu.Lock()
+			o.pendingASR--
+			shouldFlush := (o.state == StateIdle && o.pendingASR == 0)
+			o.mu.Unlock()
+
+			if shouldFlush {
+				o.flushMerger()
 			}
 
 			// Emit update
@@ -203,12 +213,13 @@ func (o *Orchestrator) loop() {
 				full += " " + tentative
 			}
 
+			state := o.currentState()
 			o.events <- Event{
 				Type:      EventFullText,
 				Text:      full,
 				Committed: committed,
 				Tentative: tentative,
-				State:     o.state,
+				State:     state,
 			}
 
 		case <-ticker.C:
@@ -247,11 +258,15 @@ func (o *Orchestrator) loop() {
 			if active {
 				if !o.isSpeaking {
 					o.isSpeaking = true
-					// Speech started
+
+					// Prepend pre-roll!
+					for _, pr := range o.preRollBuffer {
+						o.speechBuffer = append(o.speechBuffer, pr...)
+					}
+					o.preRollBuffer = nil
 				}
 
-				// Append valid speech to buffer
-				// Note: Append creates garbage. Optimization later: pre-allocated arena.
+				// Append current chunk
 				o.speechBuffer = append(o.speechBuffer, chunk...)
 
 				// Force split if buffer gets too large (e.g. 7s)
@@ -264,6 +279,14 @@ func (o *Orchestrator) loop() {
 					// Just stopped speaking
 					o.isSpeaking = false
 					o.silenceStart = time.Now()
+				}
+
+				// Accumulate Pre-roll during silence
+				c := make([]float32, len(chunk))
+				copy(c, chunk)
+				o.preRollBuffer = append(o.preRollBuffer, c)
+				if len(o.preRollBuffer) > o.preRollLimit {
+					o.preRollBuffer = o.preRollBuffer[1:]
 				}
 
 				// If we have data and silence timeout passed, submit
@@ -287,6 +310,31 @@ func (o *Orchestrator) flushAudio() {
 	buf := make([]float32, len(o.speechBuffer))
 	copy(buf, o.speechBuffer)
 
+	o.mu.Lock()
+	o.pendingASR++
+	o.mu.Unlock()
+
 	o.deps.ASR.Submit(asr.AudioWindow{Samples: buf})
 	o.speechBuffer = nil
+}
+
+func (o *Orchestrator) flushMerger() {
+	flushed := o.deps.Merger.Flush()
+	if flushed != "" {
+		if o.deps.Input != nil {
+			o.deps.Input.Paste(flushed+" ", !o.conf.NoRestore)
+		}
+		o.events <- Event{
+			Type:      EventFullText,
+			Text:      flushed,
+			Committed: flushed,
+			State:     StateIdle,
+		}
+	}
+}
+
+func (o *Orchestrator) currentState() State {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.state
 }

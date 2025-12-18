@@ -130,6 +130,22 @@ func (m *MergerService) Process(text string) (string, string) {
 	return m.formatTokens(committed), m.formatTokens(m.tentativeText)
 }
 
+// Flush returns all the remaining tentative text as committed and clears the tentative state.
+func (m *MergerService) Flush() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.tentativeText) == 0 {
+		return ""
+	}
+
+	flushed := m.formatTokens(m.tentativeText)
+	m.committedText = append(m.committedText, m.tentativeText...)
+	m.tentativeText = m.tentativeText[:0]
+	m.stability = m.stability[:0]
+	return flushed
+}
+
 // Reset clears the state (e.g. after long silence).
 func (m *MergerService) Reset() {
 	m.mu.Lock()

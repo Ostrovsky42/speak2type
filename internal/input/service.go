@@ -21,12 +21,13 @@ type KeyboardInjector struct {
 
 // Config for KeyboardInjector
 type Config struct {
-	TypingSpeed time.Duration // Default: 10ms
-	Enabled     bool          // Default: true
+	TypingSpeed  time.Duration // Default: 10ms
+	Enabled      bool          // Default: true
+	ForceWayland bool          // Allow injection on Wayland despite risks
 }
 
 // NewKeyboardInjector creates a new input injector.
-func NewKeyboardInjector() (*KeyboardInjector, error) {
+func NewKeyboardInjector(cfg Config) (*KeyboardInjector, error) {
 	sessionType := os.Getenv("XDG_SESSION_TYPE")
 	isWayland := sessionType == "wayland"
 
@@ -34,11 +35,20 @@ func NewKeyboardInjector() (*KeyboardInjector, error) {
 		return nil, fmt.Errorf("DISPLAY not set and not in Wayland. Input injection impossible.")
 	}
 
-	return &KeyboardInjector{
-		typingSpeed: 10 * time.Millisecond,
-		enabled:     true,
+	injector := &KeyboardInjector{
+		typingSpeed: cfg.TypingSpeed,
+		enabled:     cfg.Enabled,
 		isWayland:   isWayland,
-	}, nil
+	}
+
+	if isWayland && !cfg.ForceWayland {
+		log.Println("⚠️  Wayland detected. Input injection DISABLED for safety.")
+		injector.enabled = false
+	} else if isWayland && cfg.ForceWayland {
+		log.Println("⚠️  Wayland detected. Input injection FORCED (experimental).")
+	}
+
+	return injector, nil
 }
 
 // Type simulates character-by-character typing.

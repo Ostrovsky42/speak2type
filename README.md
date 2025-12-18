@@ -50,16 +50,26 @@ Binaries will be placed in `./bin/`.
 
 **✨ Blessed Path (One-line Start):**
 ```bash
-./scripts/run_session.sh -device-index 0 -lang ru
+./bin/speak2type run -device-index 0 -lang ru
+```
+
+**Verify System:**
+```bash
+./bin/speak2type doctor
 ```
 
 **Verify Text Injection (Sniper Mode):**
 ```bash
-./bin/inject-test -text "Привет!" -delay-ms 3000
+./bin/speak2type inject-test -text "Привет!" -delay-ms 3000
 # Focus a text field. The tool will paste text and restore your clipboard.
 ```
 
+### ⌨️ Global Hotkeys
+- **F8**: Toggle Recording (Start/Stop)
+- **Enter** (in terminal): Toggle Recording
+
 ### ⚠️ Limitations & Risks
+...
 
 1. **Wayland**: Text injection is **experimental** on Wayland. It may silently fail. Use X11 for reliability.
 2. **Clipboard Injection**:

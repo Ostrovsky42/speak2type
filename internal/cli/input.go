@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"flag"
@@ -10,13 +10,18 @@ import (
 	"github.com/Ostrovsky42/speak2type/internal/input"
 )
 
-func main() {
-	mode := flag.String("mode", "paste", "injection mode: paste or type")
-	text := flag.String("text", "Привет, мир! Hello, Speak2Type!", "text to inject")
-	delayMS := flag.Int("delay-ms", 2000, "delay in ms before injection")
-	restore := flag.Bool("keep-clipboard", true, "restore clipboard after paste")
-	printEnv := flag.Bool("print-env", false, "diagnose environment")
-	flag.Parse()
+// RunInjectTest runs the injection sniper tool.
+// args are passed from main, excluding the subcommand itself.
+func RunInjectTest(args []string) int {
+	// Define flags localized to this command
+	fs := flag.NewFlagSet("inject-test", flag.ExitOnError)
+	mode := fs.String("mode", "paste", "injection mode: paste or type")
+	text := fs.String("text", "Привет, мир! Hello, Speak2Type!", "text to inject")
+	delayMS := fs.Int("delay-ms", 2000, "delay in ms before injection")
+	restore := fs.Bool("keep-clipboard", true, "restore clipboard after paste")
+	printEnv := fs.Bool("print-env", false, "diagnose environment")
+
+	fs.Parse(args)
 
 	// 1. Diagnostics
 	sess := os.Getenv("XDG_SESSION_TYPE")
@@ -28,7 +33,7 @@ func main() {
 			fmt.Printf("Session: %s\n", sess)
 			fmt.Printf("Display: %s\n", disp)
 		}
-		os.Exit(0)
+		return 0
 	}
 
 	fmt.Println("🎯 Speak2Type Injector Sniper")
@@ -56,24 +61,27 @@ func main() {
 	fmt.Println(" FIRE! 🔥")
 
 	// 3. Action
-	svc, err := input.NewKeyboardInjector()
+	// 5. Init Input Service
+	fmt.Println("Initializing Input Injector...")
+	inputConfig := input.Config{Enabled: true}
+	svc, err := input.NewKeyboardInjector(inputConfig)
 	if err != nil {
 		fmt.Printf("\n❌ Init Error: %v\n", err)
-		os.Exit(1) // Fail fast
+		return 1
 	}
 
 	start := time.Now()
 	if *mode == "type" {
 		err = svc.Type(*text)
 	} else {
-		// Pass restore flag from CLI
 		err = svc.Paste(*text, *restore)
 	}
 
 	if err != nil {
 		fmt.Printf("\n❌ Injection Failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	fmt.Printf("\n✨ Done in %v.\n", time.Since(start))
+	return 0
 }
