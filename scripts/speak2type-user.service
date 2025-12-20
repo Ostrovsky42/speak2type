@@ -1,0 +1,19 @@
+[Unit]
+Description=Speak2Type Voice Input Service
+After=network.target sound.target
+
+[Service]
+Type=simple
+# Ensure we use the built binary. 
+# Replace '/path/to/speak2type' with the absolute path to your binary.
+ExecStart=%h/path/to/speak2type run
+Restart=always
+RestartSec=3
+
+# Environment needs to be passed for X11/Wayland access
+# On many systems, systemd --user automatically sees DISPLAY/DBUS_SESSION_BUS_ADDRESS
+# but they can be explicitly set here if needed.
+# PassEnvironment=DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
+
+[Install]
+WantedBy=default.target

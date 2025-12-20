@@ -35,10 +35,12 @@ func (c *Client) Close() {
 	}
 }
 
-func (c *Client) Call(cmd string, params interface{}) (*Message, error) {
-	if c.conn == nil {
-		return nil, net.ErrClosed
+func (c *Client) CallRaw(cmd string, params interface{}) (json.RawMessage, error) {
+	conn, err := net.Dial("unix", c.socketPath)
+	if err != nil {
+		return nil, err
 	}
+	defer conn.Close()
 
 	p, _ := json.Marshal(params)
 	msg := Message{
@@ -47,18 +49,21 @@ func (c *Client) Call(cmd string, params interface{}) (*Message, error) {
 	}
 
 	raw, _ := json.Marshal(msg)
-	if _, err := c.conn.Write(append(raw, '\n')); err != nil {
-		c.conn = nil
+	if _, err := conn.Write(append(raw, '\n')); err != nil {
 		return nil, err
 	}
 
-	// Wait for response (simplistic, assumes sync response)
-	dec := json.NewDecoder(c.conn)
-	var resp Message
+	dec := json.NewDecoder(conn)
+	var resp json.RawMessage
 	if err := dec.Decode(&resp); err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return resp, nil
+}
+
+func (c *Client) Call(cmd string, params interface{}) error {
+	_, err := c.CallRaw(cmd, params)
+	return err
 }
 
 // Listen starts a loop for receiving events

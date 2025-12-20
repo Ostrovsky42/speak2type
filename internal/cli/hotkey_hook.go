@@ -30,15 +30,14 @@ func NewHotkeyListener(key string, onPress func()) *HotkeyListener {
 }
 
 // Start begins listening for the hotkey.
-func (h *HotkeyListener) Start() {
+func (h *HotkeyListener) Start() error {
 	key := strings.ToLower(strings.TrimSpace(h.triggerKey))
 	if key == "" {
 		key = "f8"
 	}
 
 	if _, ok := hook.Keycode[key]; !ok {
-		fmt.Printf("⚠️  Global Hotkey disabled: unknown key %q\n", h.triggerKey)
-		return
+		return fmt.Errorf("global hotkey disabled: unknown key %q", h.triggerKey)
 	}
 
 	fmt.Printf("⌨️  Global Hotkey Active: [%s]\n", key)
@@ -99,6 +98,8 @@ func (h *HotkeyListener) Start() {
 			}
 		}
 	}()
+
+	return nil
 }
 
 func (h *HotkeyListener) Stop() {

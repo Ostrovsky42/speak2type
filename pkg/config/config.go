@@ -13,13 +13,14 @@ import (
 
 // Config represents the complete Speak2Type configuration
 type Config struct {
-	Version string        `json:"version"`
-	Audio   AudioConfig   `json:"audio"`
-	VAD     VADConfig     `json:"vad"`
-	ASR     ASRConfig     `json:"asr"`
-	Merger  MergerConfig  `json:"merger"`
-	Session SessionConfig `json:"session"`
-	UI      UIConfig      `json:"ui"`
+	Version       string             `json:"version"`
+	Audio         AudioConfig        `json:"audio"`
+	VAD           VADConfig          `json:"vad"`
+	ASR           ASRConfig          `json:"asr"`
+	Merger        MergerConfig       `json:"merger"`
+	Session       SessionConfig      `json:"session"`
+	UI            UIConfig           `json:"ui"`
+	Notifications NotificationConfig `json:"notifications"`
 }
 
 // AudioConfig defines audio capture parameters
@@ -67,6 +68,13 @@ type UIConfig struct {
 	Theme           string `json:"theme"`            // "auto"
 }
 
+// NotificationConfig defines system notification behavior.
+type NotificationConfig struct {
+	Errors    bool `json:"errors"`    // true
+	Done      bool `json:"done"`      // false
+	Recording bool `json:"recording"` // false
+}
+
 // Default returns production-ready default configuration
 func Default() *Config {
 	return &Config{
@@ -95,7 +103,7 @@ func Default() *Config {
 		},
 		Session: SessionConfig{
 			Mode:            "quick_note",
-			Hotkey:          "alt+q",
+			Hotkey:          "f8",
 			AutoCapitalize:  true,
 			AutoPunctuation: true,
 		},
@@ -103,6 +111,11 @@ func Default() *Config {
 			ShowOverlay:     true,
 			OverlayPosition: "top-right",
 			Theme:           "auto",
+		},
+		Notifications: NotificationConfig{
+			Errors:    true,
+			Done:      false,
+			Recording: false,
 		},
 	}
 }

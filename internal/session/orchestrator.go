@@ -7,6 +7,7 @@ import (
 
 	"github.com/Ostrovsky42/speak2type/internal/asr"
 	"github.com/Ostrovsky42/speak2type/internal/audio"
+	"github.com/Ostrovsky42/speak2type/internal/event"
 	"github.com/Ostrovsky42/speak2type/internal/input"
 	"github.com/Ostrovsky42/speak2type/internal/ipc"
 	"github.com/Ostrovsky42/speak2type/internal/merger"
@@ -64,6 +65,7 @@ type Orchestrator struct {
 	stop   chan struct{} // Signal to stop the main loop
 
 	ipc *ipc.Server
+	bus event.Publisher
 
 	// Pipeline state
 	speechBuffer []float32
@@ -71,6 +73,11 @@ type Orchestrator struct {
 	silenceStart time.Time // Track silence duration
 
 	pendingASR int // Counter for in-flight ASR jobs
+
+	committedLen              int
+	transcriptionFinished     bool
+	processingInjectionFailed bool
+	inputUnavailableReported  bool
 
 	// Pre-roll buffer (stores recent silence chunks)
 	preRollBuffer [][]float32
@@ -113,6 +120,13 @@ func (o *Orchestrator) SetIPC(s *ipc.Server) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.ipc = s
+}
+
+// SetEventBus registers a publisher for UX events.
+func (o *Orchestrator) SetEventBus(p event.Publisher) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.bus = p
 }
 
 func (o *Orchestrator) SetProfile(t ProfileType) {
@@ -192,6 +206,10 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 	o.speechBuffer = nil
 	o.isSpeaking = false
 	o.preRollBuffer = nil
+	o.committedLen = 0
+	o.transcriptionFinished = false
+	o.processingInjectionFailed = false
+	o.inputUnavailableReported = false
 
 	// Capture focus window
 	if o.deps.Input != nil {
@@ -206,6 +224,11 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 
 	o.mode = mode
 	o.setState(StateListening)
+	o.publishEvent(event.Event{
+		Type:  event.TypeRecordingStarted,
+		Level: event.LevelInfo,
+		State: event.StateRecording,
+	})
 	return nil
 }
 
@@ -218,6 +241,16 @@ func (o *Orchestrator) StopSession() {
 	}
 
 	o.setState(StateProcessing)
+	o.publishEvent(event.Event{
+		Type:  event.TypeRecordingStopped,
+		Level: event.LevelInfo,
+		State: event.StateTranscribing,
+	})
+	o.publishEvent(event.Event{
+		Type:  event.TypeTranscriptionStarted,
+		Level: event.LevelInfo,
+		State: event.StateTranscribing,
+	})
 	o.mu.Unlock()
 
 	// Stop Audio immediately to stop capturing
@@ -248,6 +281,24 @@ func (o *Orchestrator) setState(s State) {
 	}
 }
 
+func (o *Orchestrator) publishEvent(evt event.Event) {
+	if o.bus == nil {
+		return
+	}
+	o.bus.Publish(evt)
+}
+
+func (o *Orchestrator) publishError(code, message, hint string) {
+	o.publishEvent(event.Event{
+		Type:      event.TypeError,
+		Level:     event.LevelError,
+		State:     event.StateError,
+		ErrorCode: code,
+		Message:   message,
+		Hint:      hint,
+	})
+}
+
 // loop is the main coordination loop.
 func (o *Orchestrator) loop() {
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -262,45 +313,28 @@ func (o *Orchestrator) loop() {
 
 		case res, ok := <-o.deps.ASR.Results():
 			if !ok {
-				o.events <- Event{Type: EventError, Error: fmt.Errorf("ASR results channel closed")}
+				err := fmt.Errorf("ASR results channel closed")
+				o.events <- Event{Type: EventError, Error: err}
+				o.publishError("asr_results_closed", err.Error(), "restart the daemon")
 				return
 			}
 			if res.Error != nil {
 				o.events <- Event{Type: EventError, Error: res.Error}
+				o.publishError("asr_error", res.Error.Error(), "check models and CPU compatibility")
 			}
 			if res.Text != "" {
 				committed, tentative := o.deps.Merger.Process(res.Text)
 
-				if o.deps.Input != nil && committed != "" {
-					currentWindow := o.deps.Input.GetActiveWindow()
-					if currentWindow == o.focusWindow {
-						fmt.Printf(" [Orch] Focus match: %q. Pasting...\n", currentWindow)
-						o.deps.Input.Paste(committed+" ", !o.conf.NoRestore)
-					} else {
-						fmt.Printf(" [Orch] Focus mismatch: %q != %q\n", currentWindow, o.focusWindow)
-						o.events <- Event{
-							Type:  EventError,
-							Text:  committed,
-							Error: fmt.Errorf("focus guard: window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow),
-						}
-					}
+				if committed != "" {
+					o.addCommittedLen(len(committed))
+					o.injectText(committed)
 				}
 
-				full := committed
-				if tentative != "" {
-					full += " " + tentative
-				}
-
-				state := o.currentState()
 				// Log lang/comm/tent for debugging
 				fmt.Printf(" [Orch] Lang: [%s] Comm: %q Tent: %q\n", res.Language, committed, tentative)
 
-				o.events <- Event{
-					Type:      EventFullText,
-					Text:      full,
-					Committed: committed,
-					Tentative: tentative,
-					State:     state,
+				if committed != "" || tentative != "" {
+					o.emitFullText(committed, tentative)
 				}
 			}
 
@@ -413,34 +447,126 @@ func (o *Orchestrator) flushAudioLocked() {
 		o.pendingASR++
 	} else {
 		o.events <- Event{Type: EventError, Error: err}
+		o.publishError("asr_submit_failed", err.Error(), "check model files and available memory")
 	}
 	o.speechBuffer = nil
 }
 
-func (o *Orchestrator) flushMerger() {
-	flushed := o.deps.Merger.Flush()
-	if flushed != "" {
-		if o.deps.Input != nil {
-			currentWindow := o.deps.Input.GetActiveWindow()
-			if currentWindow == o.focusWindow {
-				fmt.Printf(" [Orch] Focus match (flush): %q. Pasting...\n", currentWindow)
-				o.deps.Input.Paste(flushed+" ", !o.conf.NoRestore)
-			} else {
-				fmt.Printf(" [Orch] Focus mismatch (flush): %q != %q\n", currentWindow, o.focusWindow)
-				o.events <- Event{
-					Type:  EventError,
-					Text:  flushed,
-					Error: fmt.Errorf("focus guard (flush): window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow),
-				}
-			}
-		}
-		o.events <- Event{
-			Type:      EventFullText,
-			Text:      flushed,
-			Committed: flushed,
-			State:     StateIdle,
-		}
+func (o *Orchestrator) addCommittedLen(n int) {
+	if n <= 0 {
+		return
 	}
+	o.mu.Lock()
+	o.committedLen += n
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) emitFullText(committed, tentative string) {
+	full := committed
+	if tentative != "" {
+		if full != "" {
+			full += " "
+		}
+		full += tentative
+	}
+	if full == "" {
+		return
+	}
+	state := o.currentState()
+	o.events <- Event{
+		Type:      EventFullText,
+		Text:      full,
+		Committed: committed,
+		Tentative: tentative,
+		State:     state,
+	}
+}
+
+func (o *Orchestrator) markInjectionFailed() {
+	o.mu.Lock()
+	o.processingInjectionFailed = true
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) injectText(text string) {
+	if text == "" {
+		return
+	}
+
+	state := o.currentState()
+	emitState := event.State("")
+	if state == StateProcessing {
+		emitState = event.StateInjecting
+	}
+
+	o.publishEvent(event.Event{
+		Type:  event.TypeInjectionStarted,
+		Level: event.LevelInfo,
+		State: emitState,
+	})
+
+	if o.deps.Input == nil {
+		o.mu.Lock()
+		shouldReport := !o.inputUnavailableReported
+		if shouldReport {
+			o.inputUnavailableReported = true
+		}
+		o.mu.Unlock()
+		if shouldReport {
+			o.publishError("inject_unavailable", "input injector unavailable", "run on X11 or enable injection")
+		}
+		if state == StateProcessing {
+			o.markInjectionFailed()
+		}
+		return
+	}
+
+	currentWindow := o.deps.Input.GetActiveWindow()
+	if currentWindow != o.focusWindow {
+		errMsg := fmt.Sprintf("focus guard: window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow)
+		o.events <- Event{
+			Type:  EventError,
+			Text:  text,
+			Error: fmt.Errorf("%s", errMsg),
+		}
+		o.publishError("focus_guard", errMsg, "refocus the target window and retry")
+		if state == StateProcessing {
+			o.markInjectionFailed()
+		}
+		return
+	}
+
+	if err := o.deps.Input.Paste(text+" ", !o.conf.NoRestore); err != nil {
+		o.publishError("inject_failed", err.Error(), "check permissions and active window focus")
+		if state == StateProcessing {
+			o.markInjectionFailed()
+		}
+		return
+	}
+
+	o.publishEvent(event.Event{
+		Type:  event.TypeInjectionFinished,
+		Level: event.LevelInfo,
+		State: emitState,
+	})
+}
+
+func (o *Orchestrator) emitTranscriptionFinished() {
+	o.mu.Lock()
+	if o.transcriptionFinished {
+		o.mu.Unlock()
+		return
+	}
+	o.transcriptionFinished = true
+	textLen := o.committedLen
+	o.mu.Unlock()
+
+	o.publishEvent(event.Event{
+		Type:    event.TypeTranscriptionFinished,
+		Level:   event.LevelInfo,
+		State:   event.StateTranscribing,
+		TextLen: textLen,
+	})
 }
 
 func (o *Orchestrator) currentState() State {
@@ -450,11 +576,34 @@ func (o *Orchestrator) currentState() State {
 }
 
 func (o *Orchestrator) finishProcessing() {
-	o.flushMerger()
+	flushed := o.deps.Merger.Flush()
+	if flushed != "" {
+		o.addCommittedLen(len(flushed))
+	}
+
+	o.emitTranscriptionFinished()
+
+	if flushed != "" {
+		o.injectText(flushed)
+		o.emitFullText(flushed, "")
+	}
 
 	o.mu.Lock()
-	if o.state == StateProcessing && o.pendingASR == 0 {
-		o.setState(StateIdle)
-	}
+	failed := o.processingInjectionFailed
+	shouldIdle := o.state == StateProcessing && o.pendingASR == 0
 	o.mu.Unlock()
+
+	if !failed {
+		o.publishEvent(event.Event{
+			Type:  event.TypeDone,
+			Level: event.LevelInfo,
+			State: event.StateDone,
+		})
+	}
+
+	if shouldIdle {
+		o.mu.Lock()
+		o.setState(StateIdle)
+		o.mu.Unlock()
+	}
 }

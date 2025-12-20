@@ -55,6 +55,25 @@ Optimized for fast system control and short snippets.
 
 ## ⚙️ Configuration & Customization
 
+### Config File
+Speak2Type uses a JSON config file:
+
+- `~/.config/speak2type/config.json` (Linux)
+
+Example:
+```json
+{
+  "session": {
+    "hotkey": "f8"
+  },
+  "notifications": {
+    "errors": true,
+    "done": false,
+    "recording": false
+  }
+}
+```
+
 ### Environment Variables
 Speak2Type respects XDG standards. You can also override behaviors via env vars:
 

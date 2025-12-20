@@ -1,6 +1,7 @@
 package input
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +20,8 @@ type KeyboardInjector struct {
 	isWayland   bool
 	conf        Config
 }
+
+var ErrInjectionDisabled = errors.New("input injection disabled")
 
 // Config for KeyboardInjector
 type Config struct {
@@ -61,13 +64,13 @@ func (s *KeyboardInjector) Type(text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.enabled {
-		return nil
-	}
-
 	if s.conf.DryRun {
 		log.Printf("[DRY-RUN] Would type: %q", text)
 		return nil
+	}
+
+	if !s.enabled {
+		return ErrInjectionDisabled
 	}
 
 	log.Printf("⌨️  Typing text: %q", text)
@@ -84,6 +87,10 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	if s.conf.DryRun {
 		log.Printf("[DRY-RUN] Would paste: %q (restore=%v)", text, restoreClipboard)
 		return nil
+	}
+
+	if !s.enabled {
+		return ErrInjectionDisabled
 	}
 
 	// 0. Focus Delay

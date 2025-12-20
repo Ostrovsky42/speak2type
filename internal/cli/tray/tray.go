@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/getlantern/systray"
 	"github.com/Ostrovsky42/speak2type/internal/daemon"
+	"github.com/Ostrovsky42/speak2type/internal/event"
 	"github.com/Ostrovsky42/speak2type/internal/ipc"
+	"github.com/Ostrovsky42/speak2type/pkg/config"
 )
 
 //go:embed assets/idle.png
@@ -23,6 +26,13 @@ var iconRecording []byte
 var (
 	client *ipc.Client
 	cMu    sync.Mutex
+
+	stateMu       sync.Mutex
+	currentState  event.State = event.StateIdle
+	currentHotkey             = ""
+	stickyError               = false
+	lastEventID   uint64
+	doneTimer     *time.Timer
 )
 
 func RunTray() int {
@@ -35,7 +45,9 @@ func onReady() {
 	systray.SetTitle("Speak2Type")
 	systray.SetTooltip("Speak2Type: Offline")
 
-	mToggle := systray.AddMenuItem("Toggle Recording", "Start/Stop recording")
+	mToggle := systray.AddMenuItem("Start/Stop Recording", "Start or stop recording")
+	mConfig := systray.AddMenuItem("Open Config", "Open config file location")
+	mReload := systray.AddMenuItem("Reload Config", "Reload configuration")
 	systray.AddSeparator()
 
 	mLang := systray.AddMenuItem("Language", "Select ASR language")
@@ -65,11 +77,11 @@ func onReady() {
 			if !client.IsConnected() {
 				if err := client.Connect(); err == nil {
 					fmt.Println("🚀 Connected to Speak2Type daemon")
-					systray.SetTooltip("Speak2Type: Idle")
+					applySnapshot()
 					// Start listener in a fresh goroutine for this connection
-					go listenState(mEn, mUk, mRu, mAuto, mDic, mCom)
+					go listenIPC(mEn, mUk, mRu, mAuto, mDic, mCom)
 				} else {
-					systray.SetTooltip("Speak2Type: Offline (Daemon not running)")
+					setOffline()
 				}
 			}
 			cMu.Unlock()
@@ -83,7 +95,10 @@ func onReady() {
 			select {
 			case <-mToggle.ClickedCh:
 				callIPC("toggle", nil)
-			case <-mRu.ClickedCh:
+			case <-mConfig.ClickedCh:
+				openConfigPath()
+			case <-mReload.ClickedCh:
+				callIPC("reload_config", nil)
 			case <-mUk.ClickedCh:
 				callIPC("set_lang", map[string]string{"lang": "uk"})
 			case <-mEn.ClickedCh:
@@ -109,18 +124,17 @@ func onReady() {
 	}()
 }
 
-func listenState(mEn, mUk, mRu, mAuto, mDic, mCom *systray.MenuItem) {
+func listenIPC(mEn, mUk, mRu, mAuto, mDic, mCom *systray.MenuItem) {
 	client.Listen(func(msg ipc.Message) {
-		if msg.Event == "state" {
+		switch msg.Event {
+		case "app_event":
+			var evt event.Event
+			if err := json.Unmarshal(msg.Data, &evt); err == nil {
+				applyEvent(evt)
+			}
+		case "state":
 			var info ipc.StateInfo
 			if err := json.Unmarshal(msg.Data, &info); err == nil {
-				if info.Recording {
-					systray.SetIcon(iconRecording)
-					systray.SetTooltip("Speak2Type: Recording...")
-				} else {
-					systray.SetIcon(iconIdle)
-					systray.SetTooltip("Speak2Type: Idle")
-				}
 				// Update language checkboxes
 				switch info.Language {
 				case "en":
@@ -157,14 +171,193 @@ func listenState(mEn, mUk, mRu, mAuto, mDic, mCom *systray.MenuItem) {
 		}
 	})
 	// If Listen returns, it means connection was lost
-	systray.SetIcon(iconIdle)
-	systray.SetTooltip("Speak2Type: Offline")
+	setOffline()
 }
 
 func callIPC(cmd string, params interface{}) {
 	cMu.Lock()
 	defer cMu.Unlock()
-	client.Call(cmd, params)
+	_ = client.Call(cmd, params)
+}
+
+func applySnapshot() {
+	raw, err := client.CallRaw("get_state", nil)
+	if err != nil {
+		setOffline()
+		return
+	}
+	var snap ipc.AppState
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return
+	}
+
+	stateMu.Lock()
+	if snap.State != "" {
+		currentState = event.State(snap.State)
+	} else {
+		currentState = event.StateIdle
+	}
+	if snap.Hotkey != "" {
+		currentHotkey = formatHotkey(snap.Hotkey)
+	} else {
+		if cfg, err := config.Load(); err == nil {
+			currentHotkey = formatHotkey(cfg.Session.Hotkey)
+		}
+	}
+	if snap.LastEventID > 0 {
+		lastEventID = snap.LastEventID
+	}
+	stickyError = currentState == event.StateError
+	stateMu.Unlock()
+
+	if currentState == event.StateDone {
+		scheduleDoneReset()
+	}
+	updateStatus()
+}
+
+func applyEvent(evt event.Event) {
+	stateMu.Lock()
+	if evt.ID != 0 && evt.ID <= lastEventID {
+		stateMu.Unlock()
+		return
+	}
+	if evt.ID != 0 {
+		lastEventID = evt.ID
+	}
+	if evt.Hotkey != "" {
+		currentHotkey = formatHotkey(evt.Hotkey)
+	}
+
+	switch evt.Type {
+	case event.TypeAppStarted:
+		stickyError = false
+		if evt.State != "" {
+			currentState = evt.State
+		} else {
+			currentState = event.StateIdle
+		}
+	case event.TypeRecordingStarted:
+		stickyError = false
+		currentState = event.StateRecording
+	case event.TypeRecordingStopped, event.TypeTranscriptionStarted:
+		if !stickyError {
+			currentState = event.StateTranscribing
+		}
+	case event.TypeInjectionStarted, event.TypeInjectionFinished:
+		if !stickyError && evt.State != "" {
+			currentState = evt.State
+		}
+	case event.TypeDone:
+		if !stickyError {
+			currentState = event.StateDone
+		}
+	case event.TypeError:
+		stickyError = true
+		currentState = event.StateError
+	default:
+		if !stickyError && evt.State != "" {
+			currentState = evt.State
+		}
+	}
+	state := currentState
+	stateMu.Unlock()
+
+	if state == event.StateDone {
+		scheduleDoneReset()
+	}
+	updateStatus()
+}
+
+func scheduleDoneReset() {
+	stateMu.Lock()
+	if doneTimer != nil {
+		doneTimer.Stop()
+	}
+	doneTimer = time.AfterFunc(2*time.Second, func() {
+		stateMu.Lock()
+		if currentState == event.StateDone && !stickyError {
+			currentState = event.StateIdle
+		}
+		stateMu.Unlock()
+		updateStatus()
+	})
+	stateMu.Unlock()
+}
+
+func updateStatus() {
+	stateMu.Lock()
+	state := currentState
+	hotkey := currentHotkey
+	if stickyError {
+		state = event.StateError
+	}
+	stateMu.Unlock()
+
+	if state == "" {
+		state = event.StateIdle
+	}
+
+	label := formatState(state)
+	tooltip := fmt.Sprintf("Speak2Type: %s", label)
+	if hotkey != "" {
+		tooltip += fmt.Sprintf(" | Hotkey: %s", hotkey)
+	}
+
+	if state == event.StateRecording {
+		systray.SetIcon(iconRecording)
+	} else {
+		systray.SetIcon(iconIdle)
+	}
+	systray.SetTooltip(tooltip)
+}
+
+func setOffline() {
+	stateMu.Lock()
+	stickyError = false
+	currentState = event.StateIdle
+	stateMu.Unlock()
+	systray.SetIcon(iconIdle)
+	systray.SetTooltip("Speak2Type: Offline")
+}
+
+func formatState(state event.State) string {
+	switch state {
+	case event.StateRecording:
+		return "Recording"
+	case event.StateTranscribing:
+		return "Transcribing"
+	case event.StateInjecting:
+		return "Injecting"
+	case event.StateDone:
+		return "Done"
+	case event.StateError:
+		return "Error"
+	default:
+		return "Idle"
+	}
+}
+
+func formatHotkey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToUpper(value)
+}
+
+func openConfigPath() {
+	path, err := config.ConfigPath()
+	if err != nil {
+		return
+	}
+	openPath(path)
+}
+
+func openPath(path string) {
+	if runtime.GOOS == "linux" {
+		exec.Command("xdg-open", path).Start()
+	}
 }
 
 func onExit() {
