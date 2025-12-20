@@ -7,6 +7,8 @@ PROJECT_ROOT := $(shell pwd)
 LIB_DIR := $(PROJECT_ROOT)/third_party/lib
 WHISPER_DIR := $(PROJECT_ROOT)/third_party/whisper.cpp
 MODELS_DIR := $(PROJECT_ROOT)/models
+VERSION := $(shell cat VERSION)
+VERSION_PKG := github.com/Ostrovsky42/speak2type/internal/version.Version
 
 # Strict Environment Setup
 # We define them here to ensure they are used, but we also check if they are valid.
@@ -46,14 +48,14 @@ doctor:
 build: check-env
 	@echo "🔨 Building Speak2Type with tags: $(BUILD_TAGS)..."
 	@mkdir -p bin
-	go build -tags "$(BUILD_TAGS)" -ldflags "-r $(LIB_DIR)" -o bin/speak2type ./cmd/speak2type
+	go build -tags "$(BUILD_TAGS)" -ldflags "-X $(VERSION_PKG)=$(VERSION) -r $(LIB_DIR)" -o bin/speak2type ./cmd/speak2type
 	@echo "✨ Build complete. Binary: ./bin/speak2type"
 
 dist: check-env
 	@echo "📦 Packaging for distribution..."
 	@rm -rf dist && mkdir -p dist/lib dist/models
 	# 1. Build with $ORIGIN/lib rpath
-	go build -tags "$(BUILD_TAGS)" -ldflags "-r \$$ORIGIN/lib" -o dist/speak2type ./cmd/speak2type
+	go build -tags "$(BUILD_TAGS)" -ldflags "-X $(VERSION_PKG)=$(VERSION) -r \$$ORIGIN/lib" -o dist/speak2type ./cmd/speak2type
 	# 2. Copy Libs
 	cp $(LIB_DIR)/*.so* dist/lib/
 	# 3. Copy Models

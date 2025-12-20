@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Ostrovsky42/speak2type/internal/version"
 )
 
 // Config represents the complete Speak2Type configuration
@@ -68,7 +70,7 @@ type UIConfig struct {
 // Default returns production-ready default configuration
 func Default() *Config {
 	return &Config{
-		Version: "1.0.0",
+		Version: version.Version,
 		Audio: AudioConfig{
 			DeviceID:         nil,
 			SampleRate:       16000,

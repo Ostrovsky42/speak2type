@@ -13,6 +13,13 @@ Designed for Linux (X11) and macOS.
 - **Reliable Injection**: Clipboard-based text insertion (works on all keyboard layouts).
 - **Diagnostics**: Built-in `doctor` command for environment verification.
 
+## Docs
+
+- **Install**: `INSTALL.md`
+- **Usage**: `USAGE.md`
+- **Release**: `RELEASE.md`
+- **Contributing**: `CONTRIBUTING.md`
+
 ## ⚡ Quick Start
 
 ### 1. Prerequisites

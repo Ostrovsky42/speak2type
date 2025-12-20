@@ -1,4 +1,4 @@
-# Speak2Type: Professional Voice Input (Release 0.9.x)
+# Speak2Type: Professional Voice Input (Release 0.9.0)
 
 Speak2Type is a production-ready voice-to-text utility for Linux, optimized for the Russian language and seamless desktop integration.
 
@@ -7,6 +7,12 @@ For detailed instructions on configuration, modes, and CLI, see: **[USAGE.md](US
 
 1.  **Run Brain**: `./speak2type run --daemon`
 2.  **Run UI**: `./speak2type tray` (requires `libayatana-appindicator3-dev`)
+
+## 🏷️ Versioning
+
+- Project version is stored in `VERSION`.
+- Builds embed the version via `-ldflags "-X github.com/Ostrovsky42/speak2type/internal/version.Version=..."`.
+- `speak2type version` prints the embedded version.
 
 ## 📜 Verification Contract
 The system is considered **production-ready** and healthy if and only if:

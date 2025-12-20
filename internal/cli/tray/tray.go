@@ -40,8 +40,9 @@ func onReady() {
 
 	mLang := systray.AddMenuItem("Language", "Select ASR language")
 	mAuto := mLang.AddSubMenuItemCheckbox("Auto-detect", "", true)
-	mRu := mLang.AddSubMenuItemCheckbox("Russian", "", false)
 	mEn := mLang.AddSubMenuItemCheckbox("English", "", false)
+	mUk := mLang.AddSubMenuItemCheckbox("Ukrainian", "", false)
+	mRu := mLang.AddSubMenuItemCheckbox("Russian", "", false)
 
 	systray.AddSeparator()
 	mProfile := systray.AddMenuItem("Profile", "Select behavior profile")
@@ -66,7 +67,7 @@ func onReady() {
 					fmt.Println("🚀 Connected to Speak2Type daemon")
 					systray.SetTooltip("Speak2Type: Idle")
 					// Start listener in a fresh goroutine for this connection
-					go listenState(mRu, mEn, mAuto, mDic, mCom)
+					go listenState(mEn, mUk, mRu, mAuto, mDic, mCom)
 				} else {
 					systray.SetTooltip("Speak2Type: Offline (Daemon not running)")
 				}
@@ -83,9 +84,12 @@ func onReady() {
 			case <-mToggle.ClickedCh:
 				callIPC("toggle", nil)
 			case <-mRu.ClickedCh:
-				callIPC("set_lang", map[string]string{"lang": "ru"})
+			case <-mUk.ClickedCh:
+				callIPC("set_lang", map[string]string{"lang": "uk"})
 			case <-mEn.ClickedCh:
 				callIPC("set_lang", map[string]string{"lang": "en"})
+			case <-mRu.ClickedCh:
+				callIPC("set_lang", map[string]string{"lang": "ru"})
 			case <-mAuto.ClickedCh:
 				callIPC("set_lang", map[string]string{"lang": "auto"})
 			case <-mDic.ClickedCh:
@@ -105,7 +109,7 @@ func onReady() {
 	}()
 }
 
-func listenState(mRu, mEn, mAuto, mDic, mCom *systray.MenuItem) {
+func listenState(mEn, mUk, mRu, mAuto, mDic, mCom *systray.MenuItem) {
 	client.Listen(func(msg ipc.Message) {
 		if msg.Event == "state" {
 			var info ipc.StateInfo
@@ -119,18 +123,27 @@ func listenState(mRu, mEn, mAuto, mDic, mCom *systray.MenuItem) {
 				}
 				// Update language checkboxes
 				switch info.Language {
-				case "ru":
-					mRu.Check()
-					mEn.Uncheck()
-					mAuto.Uncheck()
 				case "en":
 					mEn.Check()
 					mRu.Uncheck()
+					mUk.Uncheck()
 					mAuto.Uncheck()
+				case "uk":
+					mUk.Check()
+					mEn.Uncheck()
+					mRu.Uncheck()
+					mAuto.Uncheck()
+				case "ru":
+					mRu.Check()
+					mEn.Uncheck()
+					mUk.Uncheck()
+					mAuto.Uncheck()
+
 				default:
 					mAuto.Check()
 					mRu.Uncheck()
 					mEn.Uncheck()
+					mUk.Uncheck()
 				}
 				// Update profile checkboxes
 				if info.Profile == "commands" {
