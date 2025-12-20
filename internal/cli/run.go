@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ func RunSession(args []string) int {
 	pasteDelay := fs.Int("paste-delay-ms", 200, "delay after Ctrl+V (ms) (default 200)")
 	settleDelay := fs.Int("settle-delay-ms", 150, "delay after clipboard write (ms) (default 150)")
 	daemon := fs.Bool("daemon", false, "run in background")
+	hotkey := fs.String("hotkey", "f8", "global hotkey (default f8)")
 
 	var sigChan chan os.Signal
 	fs.Parse(args)
@@ -149,20 +151,24 @@ func RunSession(args []string) int {
 
 	// 6. Observe Mode
 	if *observe > 0 {
-		fmt.Printf("🔭 Observe Mode Active for %v (monitoring active windows)...\n", *observe)
-		go func() {
-			start := time.Now()
-			lastWindow := ""
-			for time.Since(start) < *observe {
-				current := inputSvc.GetActiveWindow()
-				if current != lastWindow {
-					fmt.Printf(" [Observe] Active Window: %s\n", current)
-					lastWindow = current
+		if inputSvc == nil {
+			fmt.Println("⚠️  Observe Mode disabled: input injector unavailable")
+		} else {
+			fmt.Printf("🔭 Observe Mode Active for %v (monitoring active windows)...\n", *observe)
+			go func() {
+				start := time.Now()
+				lastWindow := ""
+				for time.Since(start) < *observe {
+					current := inputSvc.GetActiveWindow()
+					if current != lastWindow {
+						fmt.Printf(" [Observe] Active Window: %s\n", current)
+						lastWindow = current
+					}
+					time.Sleep(500 * time.Millisecond)
 				}
-				time.Sleep(500 * time.Millisecond)
-			}
-			fmt.Println("🔭 Observe Mode Finished.")
-		}()
+				fmt.Println("🔭 Observe Mode Finished.")
+			}()
+		}
 	}
 
 	// 7. Init Orchestrator
@@ -226,6 +232,8 @@ func RunSession(args []string) int {
 	fmt.Println("  exit/quit  Exit")
 	fmt.Println("---------------------------------------------------")
 
+	isDaemon := os.Getenv("SPEAK2TYPE_DAEMON") == "1"
+
 	// Event Printer
 	go func() {
 		for evt := range orch.Events() {
@@ -233,7 +241,11 @@ func RunSession(args []string) int {
 			case session.EventStateChange:
 				fmt.Printf("\n🔄 State -> %s\n", evt.State)
 			case session.EventFullText:
-				fmt.Printf("\r\033[K📝 %s", evt.Text)
+				if isDaemon {
+					fmt.Printf("\n📝 %s\n", evt.Text)
+				} else {
+					fmt.Printf("\r\033[K📝 %s", evt.Text)
+				}
 			case session.EventError:
 				if evt.Text != "" {
 					fmt.Printf("\n⚠️  Injection Blocked: %v (text: %q)\n", evt.Error, evt.Text)
@@ -245,24 +257,32 @@ func RunSession(args []string) int {
 	}()
 
 	// 8. Hotkey Listener (F8)
-	isRecording := false
+	var toggleMu sync.Mutex
 	toggleFunc := func() {
-		if !isRecording {
+		toggleMu.Lock()
+		defer toggleMu.Unlock()
+
+		st := orch.GetIPCState()
+		switch st.State {
+		case "idle":
 			fmt.Println("\n▶️  [Hotkey] Starting Session...")
 			if err := orch.StartSession(session.ModeContinuous); err != nil {
 				fmt.Printf("Failed: %v\n", err)
-			} else {
-				isRecording = true
 			}
-		} else {
+		case "listening":
 			fmt.Println("\n⏹️  [Hotkey] Stopping Session...")
 			orch.StopSession()
-			isRecording = false
+		case "processing":
+			if st.PendingASR > 0 {
+				fmt.Printf("\n⏳  [Hotkey] Still processing... (%d pending)\n", st.PendingASR)
+			} else {
+				fmt.Println("\n⏳  [Hotkey] Still processing... please wait")
+			}
 		}
 	}
 
 	// Start listener in background
-	hl := NewHotkeyListener("f8", toggleFunc)
+	hl := NewHotkeyListener(*hotkey, toggleFunc)
 	hl.Start()
 	defer hl.Stop()
 

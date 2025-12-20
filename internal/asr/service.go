@@ -106,26 +106,27 @@ func (s *ASRService) Stop() {
 
 // Submit adds an audio window to the processing queue.
 // If the queue is full, it drops the OLDEST item to maintain real-time responsiveness.
-// This is a non-blocking call.
-func (s *ASRService) Submit(window AudioWindow) error {
+// This is a non-blocking call and returns how many queued windows were dropped.
+func (s *ASRService) Submit(window AudioWindow) (dropped int, err error) {
 	select {
 	case s.jobs <- window:
-		return nil
+		return 0, nil
 	default:
-		// Queue is full. Drop oldest.
-		select {
-		case <-s.jobs: // Drop one
-			// Log drop?
-		default:
-		}
+	}
 
-		// Try push again
-		select {
-		case s.jobs <- window:
-			return nil
-		default:
-			return errors.New("queue full, dropped oldest but still failed to push")
-		}
+	// Queue is full. Drop oldest queued item.
+	select {
+	case <-s.jobs:
+		dropped = 1
+	default:
+	}
+
+	// Try push again
+	select {
+	case s.jobs <- window:
+		return dropped, nil
+	default:
+		return dropped, errors.New("queue full, dropped oldest but still failed to push")
 	}
 }
 
@@ -182,9 +183,6 @@ func (s *ASRService) processWindow(window AudioWindow) {
 
 	// Iterate segments
 	nSegments := s.context.Whisper_full_n_segments()
-	if nSegments == 0 {
-		return
-	}
 
 	var fullText string
 	var start, end float32
@@ -202,19 +200,19 @@ func (s *ASRService) processWindow(window AudioWindow) {
 		end = float32(t1) / 100.0
 	}
 
-	if fullText != "" {
-		detectedLang := s.config.LanguageMode
-		if s.config.LanguageMode == "auto" {
-			langID := s.context.Whisper_full_lang_id()
-			detectedLang = whisper.Whisper_lang_str(langID)
-		}
+	detectedLang := s.config.LanguageMode
+	if s.config.LanguageMode == "auto" {
+		langID := s.context.Whisper_full_lang_id()
+		detectedLang = whisper.Whisper_lang_str(langID)
+	}
 
-		s.results <- TranscriptionChunk{
-			Text:     fullText,
-			Language: detectedLang,
-			StartSec: start,
-			EndSec:   end,
-			Prob:     1.0,
-		}
+	// Always emit a completion event so callers can track in-flight work,
+	// even if Whisper didn't produce any segments/text.
+	s.results <- TranscriptionChunk{
+		Text:     fullText,
+		Language: detectedLang,
+		StartSec: start,
+		EndSec:   end,
+		Prob:     1.0,
 	}
 }

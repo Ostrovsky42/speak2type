@@ -23,6 +23,7 @@ type StateInfo struct {
 	Recording   bool   `json:"recording"`
 	Language    string `json:"language"`
 	Profile     string `json:"profile"`
+	PendingASR  int    `json:"pending_asr,omitempty"`
 	LastError   string `json:"last_error,omitempty"`
 	FocusWindow string `json:"focus_window,omitempty"`
 }

@@ -154,6 +154,7 @@ func (o *Orchestrator) getIPCStateLocked() ipc.StateInfo {
 		Recording:   o.state == StateListening,
 		Language:    o.lang,
 		Profile:     string(o.profile.Name),
+		PendingASR:  o.pendingASR,
 		FocusWindow: o.focusWindow,
 	}
 }
@@ -179,6 +180,10 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 
 	if o.state != StateIdle {
 		return fmt.Errorf("session already active (state=%s)", o.state)
+	}
+
+	if o.pendingASR != 0 {
+		return fmt.Errorf("cannot start session: ASR still draining (%d pending)", o.pendingASR)
 	}
 
 	// Reset components
@@ -207,21 +212,26 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 // StopSession ends the current session.
 func (o *Orchestrator) StopSession() {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-
 	if o.state != StateListening {
+		o.mu.Unlock()
 		return
 	}
 
 	o.setState(StateProcessing)
+	o.mu.Unlock()
 
 	// Stop Audio immediately to stop capturing
-	o.deps.Audio.Stop()
+	_ = o.deps.Audio.Stop()
 
 	// Flush any remaining speech buffer up to ASR
+	o.mu.Lock()
 	o.flushAudioLocked()
+	done := o.pendingASR == 0
+	o.mu.Unlock()
 
-	o.setState(StateIdle)
+	if done {
+		o.finishProcessing()
+	}
 }
 
 // setState updates the state and emits an event. (Caller must hold lock)
@@ -250,56 +260,60 @@ func (o *Orchestrator) loop() {
 		case <-o.stop:
 			return
 
-		case res := <-o.deps.ASR.Results():
+		case res, ok := <-o.deps.ASR.Results():
+			if !ok {
+				o.events <- Event{Type: EventError, Error: fmt.Errorf("ASR results channel closed")}
+				return
+			}
 			if res.Error != nil {
 				o.events <- Event{Type: EventError, Error: res.Error}
-				continue
 			}
-			if res.Text == "" {
-				continue
-			}
+			if res.Text != "" {
+				committed, tentative := o.deps.Merger.Process(res.Text)
 
-			committed, tentative := o.deps.Merger.Process(res.Text)
-
-			if o.deps.Input != nil && committed != "" {
-				currentWindow := o.deps.Input.GetActiveWindow()
-				if currentWindow == o.focusWindow {
-					fmt.Printf(" [Orch] Focus match: %q. Pasting...\n", currentWindow)
-					o.deps.Input.Paste(committed+" ", !o.conf.NoRestore)
-				} else {
-					fmt.Printf(" [Orch] Focus mismatch: %q != %q\n", currentWindow, o.focusWindow)
-					o.events <- Event{
-						Type:  EventError,
-						Text:  committed,
-						Error: fmt.Errorf("focus guard: window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow),
+				if o.deps.Input != nil && committed != "" {
+					currentWindow := o.deps.Input.GetActiveWindow()
+					if currentWindow == o.focusWindow {
+						fmt.Printf(" [Orch] Focus match: %q. Pasting...\n", currentWindow)
+						o.deps.Input.Paste(committed+" ", !o.conf.NoRestore)
+					} else {
+						fmt.Printf(" [Orch] Focus mismatch: %q != %q\n", currentWindow, o.focusWindow)
+						o.events <- Event{
+							Type:  EventError,
+							Text:  committed,
+							Error: fmt.Errorf("focus guard: window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow),
+						}
 					}
+				}
+
+				full := committed
+				if tentative != "" {
+					full += " " + tentative
+				}
+
+				state := o.currentState()
+				// Log lang/comm/tent for debugging
+				fmt.Printf(" [Orch] Lang: [%s] Comm: %q Tent: %q\n", res.Language, committed, tentative)
+
+				o.events <- Event{
+					Type:      EventFullText,
+					Text:      full,
+					Committed: committed,
+					Tentative: tentative,
+					State:     state,
 				}
 			}
 
+			shouldFinalize := false
 			o.mu.Lock()
-			o.pendingASR--
-			shouldFlush := (o.state == StateIdle && o.pendingASR == 0)
+			if o.pendingASR > 0 {
+				o.pendingASR--
+			}
+			shouldFinalize = o.state == StateProcessing && o.pendingASR == 0
 			o.mu.Unlock()
 
-			if shouldFlush {
-				o.flushMerger()
-			}
-
-			full := committed
-			if tentative != "" {
-				full += " " + tentative
-			}
-
-			state := o.currentState()
-			// Log lang/comm/tent for debugging
-			fmt.Printf(" [Orch] Lang: [%s] Comm: %q Tent: %q\n", res.Language, committed, tentative)
-
-			o.events <- Event{
-				Type:      EventFullText,
-				Text:      full,
-				Committed: committed,
-				Tentative: tentative,
-				State:     state,
+			if shouldFinalize {
+				o.finishProcessing()
 			}
 
 		case <-ticker.C:
@@ -308,27 +322,31 @@ func (o *Orchestrator) loop() {
 				o.mu.Unlock()
 				continue
 			}
+			o.mu.Unlock()
 
 			stats := o.deps.Audio.GetStats()
 			if stats.BufferStats.Available < o.conf.ChunkSize {
-				o.mu.Unlock()
 				continue
 			}
 
 			n := o.deps.Audio.Read(chunk)
 			if n < o.conf.ChunkSize {
-				o.mu.Unlock()
 				continue
 			}
 
-			// Run VAD (Can run under lock as it's fast)
+			// Run VAD (avoid holding orchestrator lock; ONNX can stall)
 			prob, err := o.deps.VAD.Process(chunk)
 			if err != nil {
-				o.mu.Unlock()
 				continue
 			}
 
 			_, active := o.deps.Gate.Process(prob)
+
+			o.mu.Lock()
+			if o.state != StateListening {
+				o.mu.Unlock()
+				continue
+			}
 
 			if active {
 				if !o.isSpeaking {
@@ -383,8 +401,19 @@ func (o *Orchestrator) flushAudioLocked() {
 	buf := make([]float32, len(o.speechBuffer))
 	copy(buf, o.speechBuffer)
 
-	o.pendingASR++
-	o.deps.ASR.Submit(asr.AudioWindow{Samples: buf})
+	dropped, err := o.deps.ASR.Submit(asr.AudioWindow{Samples: buf})
+	if dropped > 0 {
+		if dropped > o.pendingASR {
+			o.pendingASR = 0
+		} else {
+			o.pendingASR -= dropped
+		}
+	}
+	if err == nil {
+		o.pendingASR++
+	} else {
+		o.events <- Event{Type: EventError, Error: err}
+	}
 	o.speechBuffer = nil
 }
 
@@ -418,4 +447,14 @@ func (o *Orchestrator) currentState() State {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.state
+}
+
+func (o *Orchestrator) finishProcessing() {
+	o.flushMerger()
+
+	o.mu.Lock()
+	if o.state == StateProcessing && o.pendingASR == 0 {
+		o.setState(StateIdle)
+	}
+	o.mu.Unlock()
 }

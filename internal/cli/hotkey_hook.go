@@ -4,6 +4,9 @@ package cli
 
 import (
 	"fmt"
+	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	hook "github.com/robotn/gohook"
@@ -14,6 +17,8 @@ type HotkeyListener struct {
 	triggerKey string
 	onPress    func()
 	stopChan   chan struct{}
+	stopOnce   sync.Once
+	wg         sync.WaitGroup
 }
 
 func NewHotkeyListener(key string, onPress func()) *HotkeyListener {
@@ -26,46 +31,79 @@ func NewHotkeyListener(key string, onPress func()) *HotkeyListener {
 
 // Start begins listening for the hotkey.
 func (h *HotkeyListener) Start() {
-	fmt.Printf("⌨️  Global Hotkey Active: [%s]\n", h.triggerKey)
+	key := strings.ToLower(strings.TrimSpace(h.triggerKey))
+	if key == "" {
+		key = "f8"
+	}
 
+	if _, ok := hook.Keycode[key]; !ok {
+		fmt.Printf("⚠️  Global Hotkey disabled: unknown key %q\n", h.triggerKey)
+		return
+	}
+
+	fmt.Printf("⌨️  Global Hotkey Active: [%s]\n", key)
+
+	invokeChan := make(chan struct{}, 1)
+
+	// Execute user callback on a separate goroutine so we never block the hook loop.
+	h.wg.Add(1)
 	go func() {
-		// Register a hook for the trigger key.
-		// hook.Register accepts events like hook.KeyDown.
-		// For simplicity, let's assume f8 corresponds to a specific keycode or use Register.
+		defer h.wg.Done()
 
-		// robotgo/hook doesn't have a simple "AddEvent(string)" that works like the old one.
-		// We use hook.Register(hook.KeyDown, []string{"f8"}, func(e hook.Event) { ... })
+		// gohook/libuiohook prefers staying on one OS thread.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		// Keep callback fast and non-blocking to avoid event queue backpressure.
+		const debounce = 250 * time.Millisecond
+		var lastTrigger time.Time
+
+		hook.Register(hook.KeyDown, []string{key}, func(e hook.Event) {
+			now := time.Now()
+			if !lastTrigger.IsZero() && now.Sub(lastTrigger) < debounce {
+				return
+			}
+			lastTrigger = now
+			select {
+			case invokeChan <- struct{}{}:
+			default:
+			}
+		})
 
 		evChan := hook.Start()
-		defer hook.End()
+		procDone := hook.Process(evChan)
+
+		for {
+			select {
+			case <-h.stopChan:
+				hook.End()
+				<-procDone
+				return
+			case <-procDone:
+				return
+			}
+		}
+	}()
+
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
 
 		for {
 			select {
 			case <-h.stopChan:
 				return
-			case e := <-evChan:
-				if e.Kind == hook.KeyDown {
-					if h.isTrigger(e) {
-						fmt.Printf(" [Hotkey] Triggered: %s\n", h.triggerKey)
-						h.onPress()
-						// Debounce
-						time.Sleep(500 * time.Millisecond)
-					}
-				}
+			case <-invokeChan:
+				fmt.Printf(" [Hotkey] Triggered: %s\n", key)
+				h.onPress()
 			}
 		}
 	}()
 }
 
-func (h *HotkeyListener) isTrigger(e hook.Event) bool {
-	// On Linux (X11), F8 usually has Rawcode 74 or Keycode 66.
-	// We'll check for F8 (66) in Keycode or 74 in Rawcode.
-	// This is defensive.
-	return (e.Keycode == 66 || e.Rawcode == 74)
-}
-
 func (h *HotkeyListener) Stop() {
-	if h.stopChan != nil {
+	h.stopOnce.Do(func() {
 		close(h.stopChan)
-	}
+	})
+	h.wg.Wait()
 }
