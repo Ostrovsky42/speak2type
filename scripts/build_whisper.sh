@@ -21,16 +21,17 @@ echo "   Configuring CMake..."
 cmake -B build -DWHISPER_BUILD_SHARED=ON -DGGML_NATIVE=OFF
 
 echo "   Compiling..."
-cmake --build build -j"$(nproc)" --config Release
+JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
+cmake --build build -j"$JOBS" --config Release
 
 echo "   Copying shared libraries to $LIB_DIR..."
 find build -type f -o -type l | while read -r file; do
     case "$(basename "$file")" in
-        libwhisper.so*|libggml.so*|libggml-base.so*|libggml-cpu.so*)
+        libwhisper.so*|libwhisper.dylib*|libggml.so*|libggml.dylib*|libggml-base.so*|libggml-base.dylib*|libggml-cpu.so*|libggml-cpu.dylib*)
             cp -L "$file" "$LIB_DIR/"
             ;;
     esac
 done
 
 echo "✅ whisper.cpp built successfully."
-ls -lh "$LIB_DIR"/libwhisper.so* "$LIB_DIR"/libggml*.so*
+ls -lh "$LIB_DIR"/libwhisper.* "$LIB_DIR"/libggml*.*

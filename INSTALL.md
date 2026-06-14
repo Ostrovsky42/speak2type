@@ -33,7 +33,7 @@ sudo apt-get install -y build-essential cmake pkg-config libasound2-dev portaudi
 ## Build
 
 ```bash
-# 1. Download libraries and models
+# 1. Download checksum-pinned libraries and models
 make deps
 
 # 2. Verify environment
@@ -43,7 +43,7 @@ make doctor
 make build
 ```
 
-The binary is created at `./bin/speak2type`.
+The binary is created at `./bin/speak2type`. Models are not stored in Git; `make deps` must complete before the default `run` command can start.
 
 ## Run
 
@@ -61,3 +61,16 @@ speak2type enable
 
 - Run `./bin/speak2type doctor` to validate dependencies and environment.
 - Logs: `~/.local/state/speak2type/speak2type.log`
+
+
+## macOS Build Notes
+
+The macOS build path is supported for development and CI with global hotkeys disabled:
+
+```bash
+brew install cmake pkg-config
+make deps
+make build BUILD_TAGS=nohook
+```
+
+Runtime input simulation on macOS still requires Accessibility permissions and is not part of the headless CI contract.

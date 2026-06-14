@@ -46,6 +46,10 @@ To install Speak2Type as a persistent background service:
     ./speak2type enable
     ```
 
+## 🧾 License Attribution
+
+Release artifacts that include native libraries or model files must also include `LICENSE` and `THIRD_PARTY_LICENSES.md`.
+
 ## 🧰 Build Artifacts (Maintainers)
 
 ```bash

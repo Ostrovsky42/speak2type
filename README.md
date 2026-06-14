@@ -1,7 +1,7 @@
 # Speak2Type
 
 Modular, highly concurrent pipeline for voice input (VAD -> ASR -> Text Stabilization -> Processing) in Go.
-Designed for Linux (X11) and macOS.
+Designed for Linux (X11) with a macOS nohook build path.
 
 > **Status**: Production Ready (Phase 8 Complete)
 
@@ -22,6 +22,18 @@ Designed for Linux (X11) and macOS.
 - **Changelog**: `CHANGELOG.md`
 - **Architecture notes**: `docs/architecture.md`
 - **License**: `LICENSE`
+- **Third-party licenses**: `THIRD_PARTY_LICENSES.md`
+
+
+## Models
+
+Model files and native libraries are intentionally not committed. After cloning, run:
+
+```bash
+make deps
+```
+
+This downloads checksum-pinned Silero VAD, Whisper GGML, ONNX Runtime, and whisper.cpp artifacts. `speak2type run` expects the default VAD model at `models/silero_vad.onnx`; if it is missing, run `make deps`. Linux and macOS dependency downloads are supported; macOS currently builds the nohook path in CI.
 
 ## ⚡ Quick Start
 

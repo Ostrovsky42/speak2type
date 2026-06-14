@@ -3,5 +3,5 @@ Type=Application
 Name=Speak2Type
 Exec=speak2type tray
 Icon=speak2type
-Categories=Audio;Utility;
+Categories=AudioVideo;Audio;Utility;
 Terminal=false

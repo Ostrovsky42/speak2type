@@ -28,6 +28,8 @@ cp "$DIST_DIR/lib/"*.so* "$APPDIR/usr/lib/"
 cp -r "$DIST_DIR/models/"* "$APPDIR/usr/share/speak2type/models/"
 cp "$ROOT_DIR/scripts/appimage/AppRun" "$APPDIR/AppRun"
 cp "$ROOT_DIR/scripts/appimage/speak2type.desktop" "$APPDIR/usr/share/applications/"
+cp "$ROOT_DIR/LICENSE" "$APPDIR/LICENSE"
+cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$APPDIR/THIRD_PARTY_LICENSES.md"
 
 if [ -f "$ROOT_DIR/scripts/appimage/speak2type.png" ]; then
   cp "$ROOT_DIR/scripts/appimage/speak2type.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/"

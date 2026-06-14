@@ -45,3 +45,48 @@ jobs:
 
       - name: Vulnerability scan
         run: make govulncheck BUILD_TAGS=nohook
+
+      - name: Build full Linux hook path
+        run: make build BUILD_TAGS=
+
+      - name: Vulnerability scan full Linux path
+        run: make govulncheck BUILD_TAGS=
+
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install system dependencies
+        run: brew install cmake pkg-config
+
+      - name: Install Go analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Download pinned native dependencies and models
+        run: make deps
+
+      - name: Build macOS nohook path
+        run: make build BUILD_TAGS=nohook
+
+      - name: Test macOS nohook path
+        run: make test BUILD_TAGS=nohook
+
+      - name: Vet macOS nohook path
+        run: make vet BUILD_TAGS=nohook
+
+      - name: Staticcheck macOS nohook path
+        run: make staticcheck BUILD_TAGS=nohook
+
+      - name: Vulnerability scan macOS nohook path
+        run: make govulncheck BUILD_TAGS=nohook

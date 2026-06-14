@@ -9,9 +9,13 @@ if [ ! -f "$DIST_DIR/speak2type" ]; then
   exit 1
 fi
 
+cp "$ROOT_DIR/LICENSE" "$DIST_DIR/LICENSE"
+cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$DIST_DIR/THIRD_PARTY_LICENSES.md"
+
 VERSION="$(cat "$ROOT_DIR/VERSION")"
 ARCH="$(uname -m)"
-OUT="$DIST_DIR/speak2type-${VERSION}-linux-${ARCH}.tar.gz"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+OUT="$DIST_DIR/speak2type-${VERSION}-${OS}-${ARCH}.tar.gz"
 
-tar -C "$DIST_DIR" -czf "$OUT" speak2type lib models README.txt
+tar -C "$DIST_DIR" -czf "$OUT" speak2type lib models README.txt LICENSE THIRD_PARTY_LICENSES.md
 echo "Release bundle created at $OUT"

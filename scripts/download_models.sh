@@ -14,11 +14,19 @@ SILERO_V4_SHA256="${SILERO_V4_SHA256:-a35ebf52fd3ce5f1469b2a36158dba761bc47b973e
 WHISPER_MODEL_REF="${WHISPER_MODEL_REF:-main}"
 WHISPER_BASE_SHA256="${WHISPER_BASE_SHA256:-60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe}"
 
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
 verify_sha256() {
     local file="$1"
     local expected="$2"
     local actual
-    actual="$(sha256sum "$file" | awk '{print $1}')"
+    actual="$(sha256_file "$file")"
     if [ "$actual" != "$expected" ]; then
         echo "❌ Checksum mismatch for $file"
         echo "   expected: $expected"

@@ -1,6 +1,6 @@
 # Speak2Type Makefile (Strict Production)
 
-.PHONY: all build clean deps test vet staticcheck govulncheck ci-check aid doctor check-env appimage release dist-tray
+.PHONY: all build clean deps models test vet staticcheck govulncheck ci-check aid doctor check-env appimage release dist-tray
 
 # Paths
 PROJECT_ROOT := $(shell pwd)
@@ -11,17 +11,32 @@ VERSION := $(shell cat VERSION)
 VERSION_PKG := github.com/Ostrovsky42/speak2type/internal/version.Version
 WHISPER_CPP_REF ?= 19ceec8eac980403b714d603e5ca31653cd42a3f
 ONNX_VERSION ?= 1.20.0
+UNAME_S := $(shell uname -s)
+LIB_EXT := so
+RUNTIME_LIB := libonnxruntime.so
+LIB_GLOB := $(LIB_DIR)/*.so*
+RPATH_LDFLAGS := -r $(LIB_DIR)
+DIST_RPATH_LDFLAGS := -r \$$ORIGIN/lib
+ifeq ($(UNAME_S),Darwin)
+	LIB_EXT := dylib
+	RUNTIME_LIB := libonnxruntime.dylib
+	LIB_GLOB := $(LIB_DIR)/*.dylib*
+	RPATH_LDFLAGS := -extldflags=-Wl,-rpath,$(LIB_DIR)
+	DIST_RPATH_LDFLAGS := -extldflags=-Wl,-rpath,@executable_path/lib
+endif
 
 # Strict Environment Setup
 # We define them here to ensure they are used, but we also check if they are valid.
 export CGO_CFLAGS := -I$(WHISPER_DIR)/include -I$(WHISPER_DIR)/ggml/include
 export CGO_LDFLAGS := -L$(LIB_DIR) -lwhisper -lggml -lggml-base -lggml-cpu -lonnxruntime
 export LD_LIBRARY_PATH := $(LIB_DIR):$(LD_LIBRARY_PATH)
+export DYLD_LIBRARY_PATH := $(LIB_DIR):$(DYLD_LIBRARY_PATH)
 export WHISPER_CPP_REF ONNX_VERSION
 
 # Auto-detect nohook if X11 headers are missing on Linux
 HAS_X11 := $(shell test -f /usr/include/X11/Xlib-xcb.h && echo 1 || echo 0)
 BUILD_TAGS ?= $(if $(filter 0,$(HAS_X11)),nohook,)
+GO_TAG_FLAGS = $(if $(strip $(BUILD_TAGS)),-tags "$(BUILD_TAGS)",)
 
 all: build
 
@@ -46,10 +61,16 @@ deps:
 	./scripts/download_models.sh
 	./scripts/build_whisper.sh
 
+models:
+	@echo "⬇️  Downloading model files..."
+	./scripts/download_models.sh
+
 check-env:
 	@echo "🔍 Checking Build Environment..."
-	@test -f $(LIB_DIR)/libonnxruntime.so || (echo "❌ libonnxruntime.so missing. Run 'make deps'"; exit 1)
-	@test -d $(WHISPER_DIR)/include || (echo "❌ whisper.cpp headers missing. Run 'make deps' (ensure submodule init)"; exit 1)
+	@test -f $(LIB_DIR)/$(RUNTIME_LIB) || (echo "❌ $(RUNTIME_LIB) missing. Run 'make deps'"; exit 1)
+	@test -d $(WHISPER_DIR)/include || (echo "❌ whisper.cpp headers missing. Run 'make deps'"; exit 1)
+	@test -f $(MODELS_DIR)/silero_vad.onnx || (echo "❌ VAD model missing at $(MODELS_DIR)/silero_vad.onnx. Run 'make deps' or 'make models'"; exit 1)
+	@test -f $(MODELS_DIR)/ggml-base.bin || (echo "❌ Whisper model missing at $(MODELS_DIR)/ggml-base.bin. Run 'make deps' or 'make models'"; exit 1)
 	@echo "✅ Environment OK"
 
 doctor:
@@ -58,19 +79,20 @@ doctor:
 build: check-env
 	@echo "🔨 Building Speak2Type with tags: $(BUILD_TAGS)..."
 	@mkdir -p bin
-	go build -tags "$(BUILD_TAGS)" -ldflags "-X $(VERSION_PKG)=$(VERSION) -r $(LIB_DIR)" -o bin/speak2type ./cmd/speak2type
+	go build $(GO_TAG_FLAGS) -ldflags "-X $(VERSION_PKG)=$(VERSION) $(RPATH_LDFLAGS)" -o bin/speak2type ./cmd/speak2type
 	@echo "✨ Build complete. Binary: ./bin/speak2type"
 
 dist: check-env
 	@echo "📦 Packaging for distribution..."
 	@rm -rf dist && mkdir -p dist/lib dist/models
-	# 1. Build with $ORIGIN/lib rpath
-	go build -tags "$(BUILD_TAGS)" -ldflags "-X $(VERSION_PKG)=$(VERSION) -r \$$ORIGIN/lib" -o dist/speak2type ./cmd/speak2type
+	# 1. Build with bundled-library rpath
+	go build $(GO_TAG_FLAGS) -ldflags "-X $(VERSION_PKG)=$(VERSION) $(DIST_RPATH_LDFLAGS)" -o dist/speak2type ./cmd/speak2type
 	# 2. Copy Libs
-	cp $(LIB_DIR)/*.so* dist/lib/
+	cp $(LIB_GLOB) dist/lib/
 	# 3. Copy Models
 	cp $(MODELS_DIR)/* dist/models/
-	# 4. Copy README subset or license
+	# 4. Copy license and attribution
+	cp LICENSE THIRD_PARTY_LICENSES.md dist/
 	@echo "Speak2Type Portable" > dist/README.txt
 	@echo "Run ./speak2type run" >> dist/README.txt
 	@echo "✨ Distribution ready in ./dist"
@@ -81,24 +103,29 @@ dist-tray: dist
 appimage: dist-tray
 	@./scripts/build_appimage.sh
 
+ifeq ($(UNAME_S),Darwin)
+release: dist
+	@./scripts/build_release.sh
+else
 release: dist-tray appimage
 	@./scripts/build_release.sh
+endif
 
 test: check-env
 	@echo "🧪 Running tests..."
-	go test -v ./internal/...
+	go test $(GO_TAG_FLAGS) -v ./internal/...
 
 vet: check-env
 	@echo "🔎 Running go vet..."
-	go vet ./...
+	go vet $(GO_TAG_FLAGS) ./...
 
 staticcheck: check-env
 	@echo "🔎 Running staticcheck..."
-	staticcheck ./...
+	staticcheck $(GO_TAG_FLAGS) ./...
 
 govulncheck: check-env
 	@echo "🔎 Running govulncheck..."
-	govulncheck ./...
+	govulncheck $(GO_TAG_FLAGS) ./...
 
 ci-check: build test vet
 

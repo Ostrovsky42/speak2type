@@ -4,12 +4,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// FindLibPath resolves libonnxruntime.so across dev, dist, and AppImage layouts.
+func runtimeLibName() string {
+	if runtime.GOOS == "darwin" {
+		return "libonnxruntime.dylib"
+	}
+	return "libonnxruntime.so"
+}
+
+// FindLibPath resolves ONNX Runtime across dev, dist, and AppImage layouts.
 func FindLibPath(preferred string) (string, error) {
-	candidates := make([]string, 0, 8)
+	libName := runtimeLibName()
+	candidates := make([]string, 0, 10)
 	add := func(path string) {
 		if path != "" {
 			candidates = append(candidates, path)
@@ -22,17 +31,17 @@ func FindLibPath(preferred string) (string, error) {
 		if exe, err := os.Executable(); err == nil {
 			exeDir := filepath.Dir(exe)
 			add(filepath.Join(exeDir, preferred))
-			add(filepath.Join(exeDir, "lib", "libonnxruntime.so"))
-			add(filepath.Join(exeDir, "..", "lib", "libonnxruntime.so"))
+			add(filepath.Join(exeDir, "lib", libName))
+			add(filepath.Join(exeDir, "..", "lib", libName))
 		}
 	}
 
 	if appDir := os.Getenv("APPDIR"); appDir != "" {
-		add(filepath.Join(appDir, "usr", "lib", "libonnxruntime.so"))
+		add(filepath.Join(appDir, "usr", "lib", libName))
 	}
 
-	add("lib/libonnxruntime.so")
-	add("third_party/lib/libonnxruntime.so")
+	add(filepath.Join("lib", libName))
+	add(filepath.Join("third_party", "lib", libName))
 
 	tried := make([]string, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
