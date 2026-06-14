@@ -1,34 +1,36 @@
-#!/bin/bash
-# scripts/build_whisper.sh
-# Builds the whisper.cpp library as a shared object.
+#!/usr/bin/env bash
+# Builds the pinned whisper.cpp library as shared objects for CGO.
 
-set -e
+set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WHISPER_ROOT="$PROJECT_ROOT/third_party/whisper.cpp"
+LIB_DIR="$PROJECT_ROOT/third_party/lib"
 
 echo "🔨 Building whisper.cpp..."
 
-if [ ! -d "$WHISPER_ROOT" ]; then
-    echo "❌ whisper.cpp directory not found. Did you clone submodules?"
-    echo "   git submodule update --init --recursive"
+if [ ! -f "$WHISPER_ROOT/include/whisper.h" ]; then
+    echo "❌ whisper.cpp headers not found. Run: ./scripts/sync_whisper.sh"
     exit 1
 fi
 
+mkdir -p "$LIB_DIR"
 cd "$WHISPER_ROOT"
 
-# Ensure clean build if needed, or incremental
-# cmake -B build -DWHISPER_BUILD_SHARED=ON
-# We strictly need SHARED libs for CGO linking usually, or static.
-# The user instruction mentioned WHISPER_BUILD_SHARED=ON.
-
 echo "   Configuring CMake..."
-cmake -B build -DWHISPER_BUILD_SHARED=ON -DGGML_NATIVE=OFF 
-# Note: GGML_NATIVE=OFF improves portability, ON optimizes for current CPU (AVX etc)
-# Let's keep defaults or allow env override.
+cmake -B build -DWHISPER_BUILD_SHARED=ON -DGGML_NATIVE=OFF
 
 echo "   Compiling..."
-cmake --build build -j$(nproc) --config Release
+cmake --build build -j"$(nproc)" --config Release
+
+echo "   Copying shared libraries to $LIB_DIR..."
+find build -type f -o -type l | while read -r file; do
+    case "$(basename "$file")" in
+        libwhisper.so*|libggml.so*|libggml-base.so*|libggml-cpu.so*)
+            cp -L "$file" "$LIB_DIR/"
+            ;;
+    esac
+done
 
 echo "✅ whisper.cpp built successfully."
-echo "   Libs should be in $WHISPER_ROOT/build/src and $WHISPER_ROOT/build/ggml/src"
+ls -lh "$LIB_DIR"/libwhisper.so* "$LIB_DIR"/libggml*.so*

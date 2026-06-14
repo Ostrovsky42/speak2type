@@ -14,11 +14,10 @@ import (
 
 // KeyboardInjector handles keyboard input simulation & text injection.
 type KeyboardInjector struct {
-	mu          sync.Mutex
-	typingSpeed time.Duration
-	enabled     bool
-	isWayland   bool
-	conf        Config
+	mu        sync.Mutex
+	enabled   bool
+	isWayland bool
+	conf      Config
 }
 
 var ErrInjectionDisabled = errors.New("input injection disabled")
@@ -40,7 +39,7 @@ func NewKeyboardInjector(cfg Config) (*KeyboardInjector, error) {
 	isWayland := sessionType == "wayland"
 
 	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && !isWayland {
-		return nil, fmt.Errorf("DISPLAY not set and not in Wayland. Input injection impossible.")
+		return nil, fmt.Errorf("DISPLAY not set and not in Wayland: input injection impossible")
 	}
 
 	injector := &KeyboardInjector{
@@ -74,7 +73,7 @@ func (s *KeyboardInjector) Type(text string) error {
 	}
 
 	log.Printf("⌨️  Typing text: %q", text)
-	robotgo.TypeStr(text)
+	robotgo.Type(text)
 	return nil
 }
 

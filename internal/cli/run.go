@@ -35,7 +35,8 @@ func RunSession(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	deviceIndex := fs.Int("device-index", -1, "capture device index")
 	lang := fs.String("lang", "ru", "ASR language")
-	modelPath := fs.String("model", "models/silero_vad_v4.onnx", "path to silero_vad.onnx")
+	modelPath := fs.String("model", "models/silero_vad.onnx", "path to silero_vad.onnx")
+	asrModelPath := fs.String("asr-model", "", "path to Whisper ggml model (overrides config asr.model_path)")
 	singleLogit := fs.Bool("single-logit", false, "treat VAD output as logit")
 	forceWayland := fs.Bool("force-wayland-inject", false, "allow text injection on Wayland (risky)")
 	noRestore := fs.Bool("no-restore", false, "don't restore clipboard after paste")
@@ -237,7 +238,13 @@ func RunSession(args []string) int {
 	// 3. Init ASR
 	fmt.Println("Initializing ASR...")
 	asrConfig := asr.DefaultConfig()
-	asrConfig.ModelPath = "models/ggml-base.bin"
+	asrConfig.ModelPath = strings.TrimSpace(cfg.ASR.ModelPath)
+	if asrConfig.ModelPath == "" {
+		asrConfig.ModelPath = asr.DefaultConfig().ModelPath
+	}
+	if strings.TrimSpace(*asrModelPath) != "" {
+		asrConfig.ModelPath = strings.TrimSpace(*asrModelPath)
+	}
 	effectiveLang := strings.TrimSpace(*lang)
 	if !langOverride && cfg.ASR.LanguageMode != "" {
 		effectiveLang = cfg.ASR.LanguageMode
@@ -558,7 +565,6 @@ func RunSession(args []string) int {
 			toggleFunc()
 		}
 	}
-	return 0
 }
 
 func startLogSubscriber(bus *event.Bus, levelFn func() logging.Level) {

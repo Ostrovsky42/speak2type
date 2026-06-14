@@ -67,7 +67,7 @@ func TestGate_Hysteresis(t *testing.T) {
 
 	// 0.5 -> No change (Silence)
 	event, active := gate.Process(0.5)
-	if active {
+	if event != EventNone || active {
 		t.Error("0.5 should not trigger speech (start=0.8)")
 	}
 

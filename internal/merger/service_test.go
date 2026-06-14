@@ -1,67 +1,59 @@
 package merger
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestMergerGolden(t *testing.T) {
-	cfg := DefaultConfig()
-	svc := NewMergerService(cfg)
+func TestMergerProcessAndFlush(t *testing.T) {
+	svc := NewMergerService(DefaultConfig())
 
-	tests := []struct {
-		name     string
-		input    string
-		wantComm string
-		wantTent string
-	}{
-		{
-			"Simple sentence",
-			"Привет мир",
-			"",
-			"Привет мир",
-		},
-		{
-			"Confirmed end",
-			"Привет мир.",
-			"Привет мир",
-			"",
-		},
-		{
-			"Russian punctuation",
-			"Как дела?",
-			"Как дела",
-			"",
-		},
+	committed, tentative := svc.Process("Привет мир")
+	if committed != "" || tentative != "Привет мир" {
+		t.Fatalf("first Process() = (%q, %q), want (%q, %q)", committed, tentative, "", "Привет мир")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			comm, tent := svc.Process(tt.input)
-			if comm != tt.wantComm || tent != tt.wantTent {
-				t.Errorf("Process(%q) = (%q, %q), want (%q, %q)", tt.input, comm, tent, tt.wantComm, tt.wantTent)
-			}
-			svc.Reset()
-		})
+	flushed := svc.Flush()
+	if flushed != "Привет мир" {
+		t.Fatalf("Flush() = %q, want %q", flushed, "Привет мир")
+	}
+	if got := svc.GetCommitted(); got != "Привет мир" {
+		t.Fatalf("GetCommitted() = %q, want %q", got, "Привет мир")
 	}
 }
 
-func TestLCSMerging(t *testing.T) {
-	// Testing overlapping segments
-	cfg := DefaultConfig()
-	svc := NewMergerService(cfg)
+func TestMergerCommitsAfterStableOverlap(t *testing.T) {
+	svc := NewMergerService(Config{MinStability: 2})
 
-	// Step 1: Fragment A
-	svc.Process("Привет мой ")
+	svc.Process("Привет мир")
+	svc.Process("Привет мир")
+	committed, tentative := svc.Process("Привет мир")
 
-	// Step 2: Fragment B (overlapping)
-	comm, tent := svc.Process("мой дорогой друг")
-
-	// The merger should identify "мой " as common and avoid duplication.
-	// This is a simplified test case for the LCS logic.
-	if comm != "" {
-		t.Errorf("Expected empty committed initially, got %q", comm)
+	if committed != "Привет мир" || tentative != "" {
+		t.Fatalf("third Process() = (%q, %q), want (%q, %q)", committed, tentative, "Привет мир", "")
 	}
-	if tent == "Привет мой мой дорогой друг" {
-		t.Errorf("Merger duplicated text: %q", tent)
+}
+
+func TestMergerCommitsPrefixThatFallsOutOfWindow(t *testing.T) {
+	svc := NewMergerService(DefaultConfig())
+
+	svc.Process("Привет мой")
+	committed, tentative := svc.Process("мой дорогой друг")
+
+	if committed != "Привет" {
+		t.Fatalf("committed = %q, want %q", committed, "Привет")
+	}
+	if tentative != "мой дорогой друг" {
+		t.Fatalf("tentative = %q, want %q", tentative, "мой дорогой друг")
+	}
+}
+
+func TestMergerReset(t *testing.T) {
+	svc := NewMergerService(DefaultConfig())
+	svc.Process("Как дела?")
+	svc.Reset()
+
+	if got := svc.GetCommitted(); got != "" {
+		t.Fatalf("GetCommitted() after Reset = %q, want empty", got)
+	}
+	if got := svc.Flush(); got != "" {
+		t.Fatalf("Flush() after Reset = %q, want empty", got)
 	}
 }

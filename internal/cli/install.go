@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,7 +103,7 @@ Environment=XAUTHORITY=%s
 WantedBy=default.target
 `, exePath, exeDir, display, xauth)
 
-	if err := ioutil.WriteFile(unitPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(content), 0644); err != nil {
 		return "", err
 	}
 	return unitPath, nil

@@ -27,3 +27,8 @@ make test
 - Include test steps or logs when applicable.
 - Note any behavior changes or compatibility risks.
 
+## Security
+
+- Do not commit secrets, local VPN profiles, access tokens, private paths, or device-specific configuration.
+- Keep local runtime settings in `~/.config/speak2type/config.json` or an ignored `.env` file.
+- If a secret is committed by mistake, rotate it before opening a pull request.

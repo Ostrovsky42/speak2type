@@ -108,9 +108,7 @@ func (m *MergerService) Process(text string) (string, string) {
 	} else {
 		// No overlap found (context switch?)
 		// Force commit everything previous.
-		for _, t := range m.tentativeText {
-			committed = append(committed, t)
-		}
+		committed = append(committed, m.tentativeText...)
 
 		// Start fresh
 		for _, t := range newTokens {

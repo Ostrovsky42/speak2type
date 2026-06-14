@@ -10,7 +10,7 @@ func TestVADService_Integration(t *testing.T) {
 	// Root detection
 	projectRoot, _ := filepath.Abs("../..")
 	libPath := filepath.Join(projectRoot, "third_party/lib/libonnxruntime.so")
-	modelPath := filepath.Join(projectRoot, "models/silero_vad_v4.onnx")
+	modelPath := filepath.Join(projectRoot, "models/silero_vad.onnx")
 
 	if _, err := os.Stat(libPath); os.IsNotExist(err) {
 		t.Skipf("Library not found at %s, skipping", libPath)

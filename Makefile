@@ -1,6 +1,6 @@
 # Speak2Type Makefile (Strict Production)
 
-.PHONY: all build clean deps test aid doctor check-env appimage release dist-tray
+.PHONY: all build clean deps test vet staticcheck govulncheck ci-check aid doctor check-env appimage release dist-tray
 
 # Paths
 PROJECT_ROOT := $(shell pwd)
@@ -9,12 +9,15 @@ WHISPER_DIR := $(PROJECT_ROOT)/third_party/whisper.cpp
 MODELS_DIR := $(PROJECT_ROOT)/models
 VERSION := $(shell cat VERSION)
 VERSION_PKG := github.com/Ostrovsky42/speak2type/internal/version.Version
+WHISPER_CPP_REF ?= 19ceec8eac980403b714d603e5ca31653cd42a3f
+ONNX_VERSION ?= 1.20.0
 
 # Strict Environment Setup
 # We define them here to ensure they are used, but we also check if they are valid.
 export CGO_CFLAGS := -I$(WHISPER_DIR)/include -I$(WHISPER_DIR)/ggml/include
 export CGO_LDFLAGS := -L$(LIB_DIR) -lwhisper -lggml -lggml-base -lggml-cpu -lonnxruntime
 export LD_LIBRARY_PATH := $(LIB_DIR):$(LD_LIBRARY_PATH)
+export WHISPER_CPP_REF ONNX_VERSION
 
 # Auto-detect nohook if X11 headers are missing on Linux
 HAS_X11 := $(shell test -f /usr/include/X11/Xlib-xcb.h && echo 1 || echo 0)
@@ -32,12 +35,16 @@ help:
 	@echo "  make release  - Build AppImage + tarball"
 	@echo "  make doctor   - Run strict diagnostics"
 	@echo "  make test     - Run tests"
+	@echo "  make vet      - Run go vet"
+	@echo "  make ci-check - Run build, tests, and vet"
 	@echo "  make clean    - Remove artifacts"
 
 deps:
 	@echo "⬇️  Downloading dependencies..."
+	./scripts/sync_whisper.sh
 	./scripts/download_libs.sh
 	./scripts/download_models.sh
+	./scripts/build_whisper.sh
 
 check-env:
 	@echo "🔍 Checking Build Environment..."
@@ -80,6 +87,20 @@ release: dist-tray appimage
 test: check-env
 	@echo "🧪 Running tests..."
 	go test -v ./internal/...
+
+vet: check-env
+	@echo "🔎 Running go vet..."
+	go vet ./...
+
+staticcheck: check-env
+	@echo "🔎 Running staticcheck..."
+	staticcheck ./...
+
+govulncheck: check-env
+	@echo "🔎 Running govulncheck..."
+	govulncheck ./...
+
+ci-check: build test vet
 
 clean:
 	@echo "🧹 Cleaning up..."

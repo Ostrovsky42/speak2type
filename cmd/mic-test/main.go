@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -25,7 +26,7 @@ func main() {
 
 	// List available devices
 	fmt.Println("📋 Available audio devices:")
-	devices, err := audio.ListDevices(nil)
+	devices, err := audio.ListDevices(context.Background())
 	if err != nil {
 		fmt.Printf("❌ Error listing devices: %v\n", err)
 		os.Exit(1)

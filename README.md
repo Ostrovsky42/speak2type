@@ -7,7 +7,7 @@ Designed for Linux (X11) and macOS.
 
 ## Features
 
-- **Robust VAD**: Silero VAD v4 (ONNX) with state preservation.
+- **Robust VAD**: Silero VAD v5 (ONNX) with v4 fallback and state preservation.
 - **Fast ASR**: Whisper.cpp via CGO bindings.
 - **Text Stability**: LCS-based merging for flicker-free streaming.
 - **Reliable Injection**: Clipboard-based text insertion (works on all keyboard layouts).
@@ -20,6 +20,8 @@ Designed for Linux (X11) and macOS.
 - **Release**: `RELEASE.md`
 - **Contributing**: `CONTRIBUTING.md`
 - **Changelog**: `CHANGELOG.md`
+- **Architecture notes**: `docs/architecture.md`
+- **License**: `LICENSE`
 
 ## ⚡ Quick Start
 
@@ -41,7 +43,7 @@ sudo apt-get install -y build-essential cmake pkg-config libasound2-dev portaudi
 We use `make` for a unified workflow.
 
 ```bash
-# 1. Download libraries (ONNX Runtime, Whisper.cpp) and models (Silero V4, GGML Base)
+# 1. Download pinned libraries (ONNX Runtime, Whisper.cpp) and models (Silero V5/V4, GGML Base)
 make deps
 
 # 2. Check your environment (Critical!)
@@ -82,7 +84,6 @@ Binaries will be placed in `./bin/`.
 - **Enter** (in terminal): Toggle Recording
 
 ### ⚠️ Limitations & Risks
-...
 
 1. **Wayland**: Text injection is **experimental** on Wayland. It may silently fail. Use X11 for reliability.
 2. **Clipboard Injection**:
@@ -101,11 +102,11 @@ Binaries will be placed in `./bin/`.
 
 ## 🔧 Architecture & Status
 
-| Coore Component | Status | Description |
+| Core Component | Status | Description |
 | :--- | :---: | :--- |
 | **Infrastructure** | ✅ Stable | `Makefile`, `cmd/doctor`, Pre-flight checks |
 | **AudioService** | ✅ Stable | Zero-alloc ring buffer, PortAudio |
-| **VADService** | ✅ Stable | Silero VAD v4 (Default) with auto-fallback |
+| **VADService** | ✅ Stable | Silero VAD v5 default with v4 fallback; v6 validation pending |
 | **ASRService** | ✅ Stable | Whisper.cpp bindings, streaming |
 | **Injector** | ✅ Stable | Clipboard-based (`Ctrl+V`), X11 optimized |
 
@@ -121,7 +122,7 @@ Binaries will be placed in `./bin/`.
 - Ensure you ran `make deps`.
 
 ### `VAD always SILENCE`
-- We default to Silero V4 (`models/silero_vad_v4.onnx`) which is robust.
+- We default to Silero VAD v5 (`models/silero_vad.onnx`) and keep v4 (`models/silero_vad_v4.onnx`) as a fallback.
 - Provide more gain: `./scripts/run_vad.sh -gain 5.0`
 
 ---

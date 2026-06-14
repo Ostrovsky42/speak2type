@@ -52,7 +52,7 @@ type VADConfig struct {
 // DefaultConfig returns production-ready VAD configuration
 func DefaultConfig() VADConfig {
 	return VADConfig{
-		ModelPath:  "models/silero_vad_v4.onnx",
+		ModelPath:  "models/silero_vad.onnx",
 		SampleRate: 16000,
 		ChunkSize:  512,
 		Threshold:  0.5,

@@ -29,11 +29,14 @@ func TestE2E_VAD_Regression(t *testing.T) {
 	// Root detection for libs/models
 	projectRoot := findProjectRoot()
 	libPath := filepath.Join(projectRoot, "third_party/lib/libonnxruntime.so")
-	modelPath := filepath.Join(projectRoot, "models/silero_vad_v4.onnx")
+	modelPath := filepath.Join(projectRoot, "models/silero_vad.onnx")
 
 	t.Logf("Project Root: %s", projectRoot)
 	if _, err := os.Stat(libPath); os.IsNotExist(err) {
 		t.Skipf("libonnxruntime missing at %s, skipping e2e", libPath)
+	}
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		t.Skipf("VAD model missing at %s, skipping e2e", modelPath)
 	}
 
 	config := vad.DefaultConfig()
@@ -56,6 +59,12 @@ func TestE2E_VAD_Regression(t *testing.T) {
 	t.Run("Tone (Non-Speech)", func(t *testing.T) {
 		path := filepath.Join(projectRoot, "testdata/tone_1khz.wav")
 		t.Logf("Reading wav from %s", path)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("test wav missing at %s", path)
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("test wav missing at %s", path)
+		}
 		samples, err := audio.ReadWavFile(path)
 		if err != nil {
 			t.Fatalf("Failed to read test wav: %v", err)

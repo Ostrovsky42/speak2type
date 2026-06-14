@@ -209,6 +209,10 @@ func (c *Config) Validate() error {
 	}
 
 	// ASR validation
+	if c.ASR.ModelPath == "" {
+		return fmt.Errorf("asr.model_path must not be empty")
+	}
+
 	validLanguageModes := map[string]bool{"auto": true, "ru": true, "en": true}
 	if !validLanguageModes[c.ASR.LanguageMode] {
 		return fmt.Errorf("invalid language_mode: %s (must be 'auto', 'ru', or 'en')", c.ASR.LanguageMode)

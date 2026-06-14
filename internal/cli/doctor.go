@@ -16,6 +16,7 @@ import (
 
 // Checksums
 const (
+	MD5_SileroV5 = "302cb198a7bb0400c62b73db2942737f"
 	MD5_SileroV4 = "03da8de2fec4108a089b39f1b4abefef"
 	MD5_GGMLBase = "335f34f382e396519b6359d32c786317"
 )
@@ -93,8 +94,9 @@ func RunDoctor() int {
 
 	// 4. Models
 	printSection("4. Models")
-	checkModel("Silero VAD v4", "models/silero_vad_v4.onnx", MD5_SileroV4, &failCount)
-	checkModel("Whisper GGML", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
+	checkModel("Silero VAD v5", "models/silero_vad.onnx", MD5_SileroV5, &failCount)
+	checkModel("Silero VAD v4 fallback", "models/silero_vad_v4.onnx", MD5_SileroV4, &failCount)
+	checkModel("Whisper GGML base", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
 
 	// 5. Audio
 	printSection("5. Audio Stack")

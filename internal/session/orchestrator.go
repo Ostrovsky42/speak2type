@@ -430,12 +430,7 @@ func (o *Orchestrator) loop() {
 	}
 }
 
-// flushAudio submits the current buffer to ASR and clears it.
-func (o *Orchestrator) flushAudio() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.flushAudioLocked()
-}
+// flushAudioLocked submits the current buffer to ASR and clears it.
 
 func (o *Orchestrator) flushAudioLocked() {
 	if len(o.speechBuffer) == 0 {

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -25,7 +24,7 @@ func GetSocketPath() string { return GetXDGPath("speak2type", "speak2type.sock",
 // RunStop finds the running daemon via PID file and kills it.
 func RunStop() int {
 	pidPath := getPIDPath()
-	data, err := ioutil.ReadFile(pidPath)
+	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		fmt.Printf("❌ No active Speak2Type process found (checked %s)\n", pidPath)
 		return 1
@@ -40,7 +39,7 @@ func RunStop() int {
 
 	// Double check it's actually speak2type
 	// On Linux we can check /proc/<pid>/cmdline
-	cmdline, _ := ioutil.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if !strings.Contains(string(cmdline), "speak2type") {
 		fmt.Printf("⚠️  PID %d exists but doesn't look like Speak2Type. Clearing stale PID file.\n", pid)
 		os.Remove(pidPath)
@@ -81,7 +80,7 @@ func RunStop() int {
 // RunStatus shows info about the daemon
 func RunStatus() int {
 	pidPath := getPIDPath()
-	data, err := ioutil.ReadFile(pidPath)
+	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		fmt.Println("Status: NOT RUNNING")
 		return 0
@@ -122,7 +121,7 @@ func AcquireLock() error {
 
 func WritePID() error {
 	pid := os.Getpid()
-	return ioutil.WriteFile(getPIDPath(), []byte(strconv.Itoa(pid)), 0644)
+	return os.WriteFile(getPIDPath(), []byte(strconv.Itoa(pid)), 0644)
 }
 
 func RemovePID() {

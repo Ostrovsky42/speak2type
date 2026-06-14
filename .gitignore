@@ -1,3 +1,35 @@
-/third_party/*
-/bin/*
-/dist/*
+# Build outputs
+/bin/
+/dist/
+*.test
+coverage.out
+
+# Downloaded native dependencies and models
+/third_party/
+/models/
+/libonnxruntime.so*
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Local configuration
+.env
+.env.*
+*.local
+config.local.json
+/config.json
+
+# Local IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Local test/audio fixtures
+/testdata/
+*.wav
+*.flac
+*.mp3
+
+# Scratch space
+/tmp

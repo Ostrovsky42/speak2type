@@ -60,6 +60,11 @@ Log level (run flag):
 speak2type run --log-level warn
 ```
 
+ASR model path (for example, a local large-v3-turbo GGML model):
+```bash
+speak2type run --asr-model models/ggml-large-v3-turbo-q5_0.bin
+```
+
 ---
 
 ## ⚙️ Configuration & Customization
