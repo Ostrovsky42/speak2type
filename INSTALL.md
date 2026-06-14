@@ -2,6 +2,22 @@
 
 This guide covers building and running Speak2Type on Linux and macOS.
 
+## Release Install (AppImage)
+
+```bash
+chmod +x Speak2Type-x86_64.AppImage
+./Speak2Type-x86_64.AppImage run
+```
+
+To enable autostart, place the AppImage in a stable path and run:
+```bash
+./Speak2Type-x86_64.AppImage enable
+```
+To disable autostart:
+```bash
+./Speak2Type-x86_64.AppImage disable
+```
+
 ## Prerequisites
 
 - **Linux**: X11 session for reliable text injection. Wayland is experimental.
@@ -38,10 +54,7 @@ The binary is created at `./bin/speak2type`.
 ## Install as a User Service (systemd)
 
 ```bash
-mkdir -p ~/.config/systemd/user/
-cp scripts/speak2type-user.service ~/.config/systemd/user/speak2type.service
-systemctl --user daemon-reload
-systemctl --user enable --now speak2type.service
+speak2type enable
 ```
 
 ## Troubleshooting

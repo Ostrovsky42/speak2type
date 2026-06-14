@@ -44,6 +44,7 @@ func DefaultConfig() ASRConfig {
 // ASRService handles speech recognition using whisper.cpp.
 // It uses a single-worker pattern to safely manage the CGO context.
 type ASRService struct {
+	mu      sync.RWMutex
 	config  ASRConfig
 	context *whisper.Context
 
@@ -158,9 +159,14 @@ func (s *ASRService) processWindow(window AudioWindow) {
 		return
 	}
 
+	s.mu.RLock()
+	languageMode := s.config.LanguageMode
+	threads := s.config.Threads
+	s.mu.RUnlock()
+
 	// Prepare params
 	params := s.context.Whisper_full_default_params(whisper.SAMPLING_GREEDY)
-	params.SetThreads(s.config.Threads)
+	params.SetThreads(threads)
 	params.SetPrintProgress(false)
 	params.SetPrintRealtime(false)
 	params.SetPrintTimestamps(false)
@@ -169,8 +175,8 @@ func (s *ASRService) processWindow(window AudioWindow) {
 
 	// Language handling
 	langID := -1 // Auto
-	if s.config.LanguageMode != "auto" {
-		langID = s.context.Whisper_lang_id(s.config.LanguageMode)
+	if languageMode != "auto" {
+		langID = s.context.Whisper_lang_id(languageMode)
 	}
 	params.SetLanguage(langID)
 
@@ -200,8 +206,8 @@ func (s *ASRService) processWindow(window AudioWindow) {
 		end = float32(t1) / 100.0
 	}
 
-	detectedLang := s.config.LanguageMode
-	if s.config.LanguageMode == "auto" {
+	detectedLang := languageMode
+	if languageMode == "auto" {
 		langID := s.context.Whisper_full_lang_id()
 		detectedLang = whisper.Whisper_lang_str(langID)
 	}
@@ -215,4 +221,18 @@ func (s *ASRService) processWindow(window AudioWindow) {
 		EndSec:   end,
 		Prob:     1.0,
 	}
+}
+
+// SetLanguageMode updates the ASR language mode at runtime.
+func (s *ASRService) SetLanguageMode(lang string) {
+	s.mu.Lock()
+	s.config.LanguageMode = lang
+	s.mu.Unlock()
+}
+
+// LanguageMode returns the current ASR language mode.
+func (s *ASRService) LanguageMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.LanguageMode
 }

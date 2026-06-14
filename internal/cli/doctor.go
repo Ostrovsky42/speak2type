@@ -9,8 +9,9 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/go-vgo/robotgo"
 	"github.com/Ostrovsky42/speak2type/internal/audio"
+	"github.com/Ostrovsky42/speak2type/internal/vad"
+	"github.com/go-vgo/robotgo"
 )
 
 // Checksums
@@ -82,11 +83,11 @@ func RunDoctor() int {
 
 	// 3. Libraries
 	printSection("3. Dependencies")
-	libPath := "third_party/lib/libonnxruntime.so"
-	if _, err := os.Stat(libPath); err == nil {
+	libPath, err := vad.FindLibPath("third_party/lib/libonnxruntime.so")
+	if err == nil {
 		printOk(fmt.Sprintf("ONNX Runtime found: %s", libPath))
 	} else {
-		printFail(fmt.Sprintf("ONNX Runtime MISSING at %s", libPath))
+		printFail(err.Error())
 		failCount++
 	}
 

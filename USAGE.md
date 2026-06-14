@@ -50,6 +50,15 @@ Optimized for fast system control and short snippets.
 | `speak2type tray` | Launch the Systray UI (requires Gtk/AppIndicator). |
 | `speak2type doctor` | Comprehensive system health check. |
 | `speak2type version` | Show version info. |
+| `speak2type enable` | Install and enable systemd user service. |
+| `speak2type disable` | Disable systemd user service. |
+
+`speak2type --version` is a shortcut for the version output.
+
+Log level (run flag):
+```bash
+speak2type run --log-level warn
+```
 
 ---
 
@@ -70,6 +79,9 @@ Example:
     "errors": true,
     "done": false,
     "recording": false
+  },
+  "logging": {
+    "level": "info"
   }
 }
 ```
@@ -82,11 +94,15 @@ Speak2Type respects XDG standards. You can also override behaviors via env vars:
 - `DISPLAY` / `XAUTHORITY`: Required for global hotkeys and text injection.
 
 ### Service Integration
-To run Speak2Type automatically on login, use the built-in installer:
+To run Speak2Type automatically on login, use:
 ```bash
-speak2type install-service
+speak2type enable
 ```
 This creates a systemd user unit at `~/.config/systemd/user/speak2type.service`.
+To disable autostart:
+```bash
+speak2type disable
+```
 
 ---
 

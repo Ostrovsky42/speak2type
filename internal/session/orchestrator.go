@@ -143,6 +143,17 @@ func (o *Orchestrator) SetProfile(t ProfileType) {
 	}
 }
 
+// SetLanguage updates the current ASR language and broadcasts state.
+func (o *Orchestrator) SetLanguage(lang string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.lang = lang
+	if o.ipc != nil {
+		o.ipc.Broadcast("state", o.getIPCStateLocked())
+	}
+}
+
 // GetIPCState returns the current state in IPC format
 func (o *Orchestrator) GetIPCState() ipc.StateInfo {
 	o.mu.Lock()

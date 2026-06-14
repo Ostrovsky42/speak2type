@@ -1,6 +1,6 @@
 # Speak2Type Makefile (Strict Production)
 
-.PHONY: all build clean deps test aid doctor check-env
+.PHONY: all build clean deps test aid doctor check-env appimage release dist-tray
 
 # Paths
 PROJECT_ROOT := $(shell pwd)
@@ -27,6 +27,9 @@ help:
 	@echo "  make deps     - Download models and libraries"
 	@echo "  make build    - Compile binaries (fails if libs missing)"
 	@echo "  make dist     - Create portable dist/ folder"
+	@echo "  make dist-tray - Create dist/ with tray support"
+	@echo "  make appimage - Build AppImage (requires appimagetool)"
+	@echo "  make release  - Build AppImage + tarball"
 	@echo "  make doctor   - Run strict diagnostics"
 	@echo "  make test     - Run tests"
 	@echo "  make clean    - Remove artifacts"
@@ -64,6 +67,15 @@ dist: check-env
 	@echo "Speak2Type Portable" > dist/README.txt
 	@echo "Run ./speak2type run" >> dist/README.txt
 	@echo "✨ Distribution ready in ./dist"
+
+dist-tray: BUILD_TAGS := $(strip $(BUILD_TAGS) tray)
+dist-tray: dist
+
+appimage: dist-tray
+	@./scripts/build_appimage.sh
+
+release: dist-tray appimage
+	@./scripts/build_release.sh
 
 test: check-env
 	@echo "🧪 Running tests..."

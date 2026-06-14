@@ -19,6 +19,7 @@ Designed for Linux (X11) and macOS.
 - **Usage**: `USAGE.md`
 - **Release**: `RELEASE.md`
 - **Contributing**: `CONTRIBUTING.md`
+- **Changelog**: `CHANGELOG.md`
 
 ## ⚡ Quick Start
 
@@ -69,6 +70,11 @@ Binaries will be placed in `./bin/`.
 ```bash
 ./bin/speak2type inject-test -text "Привет!" -delay-ms 3000
 # Focus a text field. The tool will paste text and restore your clipboard.
+```
+
+**Enable Autostart (systemd user service):**
+```bash
+./bin/speak2type enable
 ```
 
 ### ⌨️ Global Hotkeys

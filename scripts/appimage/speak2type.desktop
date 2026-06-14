@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Speak2Type
+Exec=speak2type tray
+Icon=speak2type
+Categories=Audio;Utility;
+Terminal=false

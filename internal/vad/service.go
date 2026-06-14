@@ -67,13 +67,14 @@ func NewVADService(config VADConfig) (*VADService, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	ortPath := config.LibPath
-	if _, err := os.Stat(ortPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("ONNX Runtime library not found at %s. Please run: ./scripts/download_libs.sh", ortPath)
+	ortPath, err := FindLibPath(config.LibPath)
+	if err != nil {
+		return nil, fmt.Errorf("%v. Please run: ./scripts/download_libs.sh", err)
 	}
+	config.LibPath = ortPath
 	onnxruntime.SetSharedLibraryPath(ortPath)
 
-	err := onnxruntime.InitializeEnvironment()
+	err = onnxruntime.InitializeEnvironment()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize ONNX Runtime: %w", err)
 	}

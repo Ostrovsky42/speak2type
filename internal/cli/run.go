@@ -21,6 +21,7 @@ import (
 	"github.com/Ostrovsky42/speak2type/internal/event"
 	"github.com/Ostrovsky42/speak2type/internal/input"
 	"github.com/Ostrovsky42/speak2type/internal/ipc"
+	"github.com/Ostrovsky42/speak2type/internal/logging"
 	"github.com/Ostrovsky42/speak2type/internal/merger"
 	"github.com/Ostrovsky42/speak2type/internal/notify"
 	"github.com/Ostrovsky42/speak2type/internal/session"
@@ -45,6 +46,7 @@ func RunSession(args []string) int {
 	settleDelay := fs.Int("settle-delay-ms", 150, "delay after clipboard write (ms) (default 150)")
 	daemon := fs.Bool("daemon", false, "run in background")
 	hotkey := fs.String("hotkey", "", "global hotkey (default from config, fallback f8)")
+	logLevel := fs.String("log-level", "", "log level: debug, info, warn, error")
 
 	var sigChan chan os.Signal
 	fs.Parse(args)
@@ -99,7 +101,17 @@ func RunSession(args []string) int {
 	cfgValue.Store(cfg)
 
 	bus := event.NewBus()
-	startLogSubscriber(bus)
+	logLevelOverride := strings.TrimSpace(*logLevel)
+	startLogSubscriber(bus, func() logging.Level {
+		if logLevelOverride != "" {
+			return logging.Parse(logLevelOverride)
+		}
+		cfg, ok := cfgValue.Load().(*config.Config)
+		if ok && cfg != nil {
+			return logging.Parse(cfg.Logging.Level)
+		}
+		return logging.LevelInfo
+	})
 	startDropMonitor(bus)
 
 	bus.Publish(event.Event{
@@ -128,6 +140,7 @@ func RunSession(args []string) int {
 	}
 
 	hotkeyValue := strings.TrimSpace(*hotkey)
+	langOverride := flagPresent(args, "lang")
 	hotkeyOverride := hotkeyValue != ""
 	if hotkeyValue == "" {
 		if cfg.Session.Hotkey != "" {
@@ -138,6 +151,7 @@ func RunSession(args []string) int {
 	}
 	hotkeyDisplay := formatHotkey(hotkeyValue)
 
+	var applyConfig func(*config.Config)
 	reloadConfig := func() error {
 		newCfg, err := config.Load()
 		if err != nil {
@@ -153,6 +167,9 @@ func RunSession(args []string) int {
 		}
 		cfgValue.Store(newCfg)
 		cfg = newCfg
+		if applyConfig != nil {
+			applyConfig(newCfg)
+		}
 
 		if !hotkeyOverride && newCfg.Session.Hotkey != "" && newCfg.Session.Hotkey != hotkeyValue {
 			log.Printf("config hotkey changed to %q; restart required to apply", newCfg.Session.Hotkey)
@@ -221,7 +238,14 @@ func RunSession(args []string) int {
 	fmt.Println("Initializing ASR...")
 	asrConfig := asr.DefaultConfig()
 	asrConfig.ModelPath = "models/ggml-base.bin"
-	asrConfig.LanguageMode = *lang
+	effectiveLang := strings.TrimSpace(*lang)
+	if !langOverride && cfg.ASR.LanguageMode != "" {
+		effectiveLang = cfg.ASR.LanguageMode
+	}
+	if effectiveLang == "" {
+		effectiveLang = "auto"
+	}
+	asrConfig.LanguageMode = effectiveLang
 
 	asrSvc, err := asr.NewASRService(asrConfig)
 	if err != nil {
@@ -307,6 +331,21 @@ func RunSession(args []string) int {
 
 	orch := session.NewOrchestrator(orchConfig, deps)
 	orch.SetEventBus(bus)
+	orch.SetLanguage(effectiveLang)
+
+	applyConfig = func(newCfg *config.Config) {
+		if langOverride {
+			return
+		}
+		newLang := strings.TrimSpace(newCfg.ASR.LanguageMode)
+		if newLang == "" {
+			newLang = "auto"
+		}
+		if newLang != asrSvc.LanguageMode() {
+			asrSvc.SetLanguageMode(newLang)
+			orch.SetLanguage(newLang)
+		}
+	}
 
 	// 5. IPC Server
 	ipcPath := GetSocketPath()
@@ -346,6 +385,28 @@ func RunSession(args []string) int {
 			}
 			if err := json.Unmarshal(msg.Params, &p); err == nil {
 				orch.SetProfile(session.ProfileType(p.Profile))
+			}
+			return orch.GetIPCState(), nil
+		case "set_lang":
+			var p struct {
+				Lang string `json:"lang"`
+			}
+			if err := json.Unmarshal(msg.Params, &p); err != nil {
+				return nil, err
+			}
+			lang := strings.TrimSpace(p.Lang)
+			if lang == "" {
+				return nil, fmt.Errorf("lang is required")
+			}
+			asrSvc.SetLanguageMode(lang)
+			orch.SetLanguage(lang)
+			cfgUpdate, ok := cfgValue.Load().(*config.Config)
+			if ok && cfgUpdate != nil {
+				cfgUpdate.ASR.LanguageMode = lang
+				if err := cfgUpdate.Save(); err != nil {
+					log.Printf("config save failed: %v", err)
+				}
+				cfgValue.Store(cfgUpdate)
 			}
 			return orch.GetIPCState(), nil
 		case "quit":
@@ -500,10 +561,15 @@ func RunSession(args []string) int {
 	return 0
 }
 
-func startLogSubscriber(bus *event.Bus) {
+func startLogSubscriber(bus *event.Bus, levelFn func() logging.Level) {
 	ch, _ := bus.Subscribe("log", 200)
 	go func() {
 		for evt := range ch {
+			threshold := levelFn()
+			msgLevel := logging.FromEventLevel(evt.Level)
+			if !logging.Allowed(threshold, msgLevel) {
+				continue
+			}
 			log.Println(formatEvent(evt))
 		}
 	}()
@@ -617,4 +683,19 @@ func formatEvent(evt event.Event) string {
 		fields = append(fields, fmt.Sprintf("hint=%q", evt.Hint))
 	}
 	return strings.Join(fields, " ")
+}
+
+func flagPresent(args []string, name string) bool {
+	short := "-" + name
+	long := "--" + name
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == short || arg == long {
+			return true
+		}
+		if strings.HasPrefix(arg, short+"=") || strings.HasPrefix(arg, long+"=") {
+			return true
+		}
+	}
+	return false
 }

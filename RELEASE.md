@@ -13,6 +13,20 @@ For detailed instructions on configuration, modes, and CLI, see: **[USAGE.md](US
 - Project version is stored in `VERSION`.
 - Builds embed the version via `-ldflags "-X github.com/Ostrovsky42/speak2type/internal/version.Version=..."`.
 - `speak2type version` prints the embedded version.
+- Changes are tracked in `CHANGELOG.md`.
+
+## 📦 Release Artifacts (Linux)
+
+- `Speak2Type-x86_64.AppImage` (recommended, self-contained)
+- `speak2type-<version>-linux-<arch>.tar.gz` (portable bundle: binary + libs + models)
+
+## 🔁 Updating
+
+- **AppImage**: download the new AppImage and replace the old one.
+- **Tarball**: unpack over the previous directory and restart the service:
+  ```bash
+  systemctl --user restart speak2type.service
+  ```
 
 ## 📜 Verification Contract
 The system is considered **production-ready** and healthy if and only if:
@@ -27,14 +41,19 @@ The system is considered **production-ready** and healthy if and only if:
 To install Speak2Type as a persistent background service:
 
 1.  Deploy the binary and libraries to a stable path (e.g., `~/bin/speak2type`).
-2.  Configure the `scripts/speak2type-user.service` template with the absolute path to your binary.
-3.  Install and start:
+2.  Enable autostart:
     ```bash
-    mkdir -p ~/.config/systemd/user/
-    cp scripts/speak2type-user.service ~/.config/systemd/user/speak2type.service
-    systemctl --user daemon-reload
-    systemctl --user enable --now speak2type.service
+    ./speak2type enable
     ```
+
+## 🧰 Build Artifacts (Maintainers)
+
+```bash
+make dist
+make appimage
+make release
+```
+`appimagetool` must be installed to build AppImages.
 
 ## ⚠️ Known Failure Modes & Limitations
 *   **Clipboard Racing**: If you are manually copying/pasting while Speak2Type is injecting, the `restore-clipboard` feature may capture and restore inconsistent state.

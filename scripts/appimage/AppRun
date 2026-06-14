@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+HERE="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+cd "$HERE/usr/share/speak2type"
+exec "$HERE/usr/bin/speak2type" "$@"

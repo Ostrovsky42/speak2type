@@ -21,6 +21,7 @@ type Config struct {
 	Session       SessionConfig      `json:"session"`
 	UI            UIConfig           `json:"ui"`
 	Notifications NotificationConfig `json:"notifications"`
+	Logging       LoggingConfig      `json:"logging"`
 }
 
 // AudioConfig defines audio capture parameters
@@ -56,7 +57,7 @@ type MergerConfig struct {
 // SessionConfig defines session behavior
 type SessionConfig struct {
 	Mode            string `json:"mode"`             // "quick_note" | "continuous"
-	Hotkey          string `json:"hotkey"`           // "alt+q"
+	Hotkey          string `json:"hotkey"`           // "f8"
 	AutoCapitalize  bool   `json:"auto_capitalize"`  // true
 	AutoPunctuation bool   `json:"auto_punctuation"` // true
 }
@@ -73,6 +74,11 @@ type NotificationConfig struct {
 	Errors    bool `json:"errors"`    // true
 	Done      bool `json:"done"`      // false
 	Recording bool `json:"recording"` // false
+}
+
+// LoggingConfig defines logging verbosity.
+type LoggingConfig struct {
+	Level string `json:"level"` // "info"
 }
 
 // Default returns production-ready default configuration
@@ -116,6 +122,9 @@ func Default() *Config {
 			Errors:    true,
 			Done:      false,
 			Recording: false,
+		},
+		Logging: LoggingConfig{
+			Level: "info",
 		},
 	}
 }
@@ -214,6 +223,13 @@ func (c *Config) Validate() error {
 	// Merger validation
 	if c.Merger.StabilityThreshold < 1 {
 		return fmt.Errorf("stability_threshold must be >= 1")
+	}
+
+	// Logging validation
+	switch c.Logging.Level {
+	case "", "debug", "info", "warn", "warning", "error":
+	default:
+		return fmt.Errorf("invalid logging level: %s (must be debug, info, warn, or error)", c.Logging.Level)
 	}
 
 	return nil

@@ -7,8 +7,10 @@ Type=simple
 # Ensure we use the built binary. 
 # Replace '/path/to/speak2type' with the absolute path to your binary.
 ExecStart=%h/path/to/speak2type run
+WorkingDirectory=%h/path/to
 Restart=always
 RestartSec=3
+Environment=SPEAK2TYPE_DAEMON=1
 
 # Environment needs to be passed for X11/Wayland access
 # On many systems, systemd --user automatically sees DISPLAY/DBUS_SESSION_BUS_ADDRESS

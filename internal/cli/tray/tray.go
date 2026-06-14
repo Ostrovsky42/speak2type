@@ -4,17 +4,19 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/getlantern/systray"
 	"github.com/Ostrovsky42/speak2type/internal/daemon"
 	"github.com/Ostrovsky42/speak2type/internal/event"
 	"github.com/Ostrovsky42/speak2type/internal/ipc"
 	"github.com/Ostrovsky42/speak2type/pkg/config"
+	"github.com/getlantern/systray"
 )
 
 //go:embed assets/idle.png
@@ -36,6 +38,7 @@ var (
 )
 
 func RunTray() int {
+	ensureTrayTempDir()
 	systray.Run(onReady, onExit)
 	return 0
 }
@@ -55,6 +58,7 @@ func onReady() {
 	mEn := mLang.AddSubMenuItemCheckbox("English", "", false)
 	mUk := mLang.AddSubMenuItemCheckbox("Ukrainian", "", false)
 	mRu := mLang.AddSubMenuItemCheckbox("Russian", "", false)
+	mOther := mLang.AddSubMenuItemCheckbox("Other...", "Custom language code", false)
 
 	systray.AddSeparator()
 	mProfile := systray.AddMenuItem("Profile", "Select behavior profile")
@@ -79,7 +83,7 @@ func onReady() {
 					fmt.Println("🚀 Connected to Speak2Type daemon")
 					applySnapshot()
 					// Start listener in a fresh goroutine for this connection
-					go listenIPC(mEn, mUk, mRu, mAuto, mDic, mCom)
+					go listenIPC(mEn, mUk, mRu, mAuto, mOther, mDic, mCom)
 				} else {
 					setOffline()
 				}
@@ -107,6 +111,12 @@ func onReady() {
 				callIPC("set_lang", map[string]string{"lang": "ru"})
 			case <-mAuto.ClickedCh:
 				callIPC("set_lang", map[string]string{"lang": "auto"})
+			case <-mOther.ClickedCh:
+				if lang := promptLanguage(); lang != "" {
+					callIPC("set_lang", map[string]string{"lang": lang})
+				} else {
+					openConfigPath()
+				}
 			case <-mDic.ClickedCh:
 				callIPC("set_profile", map[string]string{"profile": "dictation"})
 			case <-mCom.ClickedCh:
@@ -124,7 +134,7 @@ func onReady() {
 	}()
 }
 
-func listenIPC(mEn, mUk, mRu, mAuto, mDic, mCom *systray.MenuItem) {
+func listenIPC(mEn, mUk, mRu, mAuto, mOther, mDic, mCom *systray.MenuItem) {
 	client.Listen(func(msg ipc.Message) {
 		switch msg.Event {
 		case "app_event":
@@ -142,19 +152,28 @@ func listenIPC(mEn, mUk, mRu, mAuto, mDic, mCom *systray.MenuItem) {
 					mRu.Uncheck()
 					mUk.Uncheck()
 					mAuto.Uncheck()
+					mOther.Uncheck()
 				case "uk":
 					mUk.Check()
 					mEn.Uncheck()
 					mRu.Uncheck()
 					mAuto.Uncheck()
+					mOther.Uncheck()
 				case "ru":
 					mRu.Check()
 					mEn.Uncheck()
 					mUk.Uncheck()
 					mAuto.Uncheck()
+					mOther.Uncheck()
 
 				default:
-					mAuto.Check()
+					if info.Language != "" && info.Language != "auto" {
+						mOther.Check()
+						mAuto.Uncheck()
+					} else {
+						mAuto.Check()
+						mOther.Uncheck()
+					}
 					mRu.Uncheck()
 					mEn.Uncheck()
 					mUk.Uncheck()
@@ -366,5 +385,55 @@ func onExit() {
 func openTerminal(cmd string) {
 	if runtime.GOOS == "linux" {
 		exec.Command("x-terminal-emulator", "-e", "bash", "-c", cmd+"; read").Start()
+	}
+}
+
+func promptLanguage() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	if _, err := exec.LookPath("zenity"); err != nil {
+		return ""
+	}
+	out, err := exec.Command("zenity", "--entry", "--text=Language code (e.g. ru, en, de, auto)").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func ensureTrayTempDir() {
+	if os.Getenv("SNAP") == "" {
+		return
+	}
+
+	tmp := os.Getenv("TMPDIR")
+	if tmp != "" && !strings.HasPrefix(tmp, "/tmp") {
+		return
+	}
+
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir != "" && !strings.HasPrefix(runtimeDir, "/tmp") {
+		dir := filepath.Join(runtimeDir, "speak2type")
+		if err := os.MkdirAll(dir, 0700); err == nil {
+			_ = os.Setenv("TMPDIR", dir)
+			return
+		}
+	}
+
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			cacheDir = filepath.Join(home, ".cache")
+		}
+	}
+	if cacheDir == "" {
+		return
+	}
+
+	dir := filepath.Join(cacheDir, "speak2type", "tmp")
+	if err := os.MkdirAll(dir, 0700); err == nil {
+		_ = os.Setenv("TMPDIR", dir)
 	}
 }

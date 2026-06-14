@@ -15,6 +15,10 @@ func main() {
 	}
 
 	command := os.Args[1]
+	if command == "--version" || command == "-v" {
+		fmt.Printf("Speak2Type Voice Input v%s\n", version.Version)
+		return
+	}
 	// Subcommand arguments (skipping program name and subcommand name)
 	args := os.Args[2:]
 
@@ -32,21 +36,32 @@ func main() {
 		os.Exit(cli.RunStatus())
 	case "install-service":
 		os.Exit(cli.RunInstallService())
+	case "enable":
+		os.Exit(cli.RunEnableService())
+	case "disable":
+		os.Exit(cli.RunDisableService())
 	case "tray", "ui":
 		handleTrayCommand()
 	case "version":
 		fmt.Printf("Speak2Type Voice Input v%s\n", version.Version)
 	default:
-		fmt.Println("Usage: speak2type [run|doctor|inject-test|stop|status|install-service|version]")
+		fmt.Println("Usage: speak2type [run|doctor|inject-test|stop|status|install-service|enable|disable|version]")
 		os.Exit(1)
 	}
 }
 
 func printUsage() {
 	fmt.Println("Usage: speak2type <command> [args]")
+	fmt.Println("       speak2type --version")
 	fmt.Println("Commands:")
 	fmt.Println("  doctor       Check system environment")
 	fmt.Println("  run          Start voice session")
 	fmt.Println("  inject-test  Test text injection")
+	fmt.Println("  stop         Stop running daemon")
+	fmt.Println("  status       Show daemon status")
+	fmt.Println("  tray         Start tray UI (requires tray build tag)")
+	fmt.Println("  install-service  Write systemd unit file")
+	fmt.Println("  enable       Enable systemd user service")
+	fmt.Println("  disable      Disable systemd user service")
 	fmt.Println("  version      Show version")
 }
