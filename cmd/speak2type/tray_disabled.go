@@ -5,11 +5,17 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/Ostrovsky42/speak2type/internal/cli"
 )
 
 func handleDefaultCommand() {
 	printUsage()
 	os.Exit(0)
+}
+
+func handleRunCommand(args []string) {
+	os.Exit(cli.RunSession(args))
 }
 
 func handleTrayCommand() {

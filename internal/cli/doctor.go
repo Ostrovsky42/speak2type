@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/Ostrovsky42/speak2type/internal/audio"
-	"github.com/Ostrovsky42/speak2type/internal/input"
 	"github.com/Ostrovsky42/speak2type/internal/vad"
 	"github.com/Ostrovsky42/speak2type/pkg/config"
+	"github.com/go-vgo/robotgo"
 )
 
 // Checksums
@@ -63,42 +63,25 @@ func RunDoctor() int {
 			printOk(fmt.Sprintf("XAUTHORITY found: %s", xauth))
 		}
 
-		printSection("2. Input Access")
-		if err := input.CheckClipboardAccess(); err != nil {
-			printFail(fmt.Sprintf("Clipboard access failed: %v", err))
+		// Clipboard check
+		printSection("2. Clipboard Access")
+		original, err := robotgo.ReadAll()
+		if err != nil {
+			printFail(fmt.Sprintf("Failed to read clipboard: %v", err))
 			failCount++
 		} else {
-			printOk("Clipboard READ/WRITE works.")
-		}
-
-		if err := input.CheckKeyboardAccess(); err != nil {
-			if session == "wayland" {
-				printWarn(fmt.Sprintf("Keyboard injection backend unavailable on Wayland: %v", err))
-			} else {
-				printFail(fmt.Sprintf("Keyboard injection backend failed: %v", err))
+			printOk("Clipboard READ works.")
+			err = robotgo.WriteAll(original)
+			if err != nil {
+				printFail(fmt.Sprintf("Failed to write clipboard: %v", err))
 				failCount++
+			} else {
+				printOk("Clipboard WRITE works.")
 			}
-		} else {
-			printOk("Keyboard injection backend works.")
 		}
 
 	} else if goos == "darwin" {
-		printOk("macOS detected. Audio capture uses malgo; no extra audio backend is required.")
-
-		printSection("2. Input Access")
-		if err := input.CheckClipboardAccess(); err != nil {
-			printFail(fmt.Sprintf("Clipboard access failed: %v", err))
-			failCount++
-		} else {
-			printOk("Clipboard READ/WRITE works.")
-		}
-
-		if err := input.CheckKeyboardAccess(); err != nil {
-			printFail(fmt.Sprintf("macOS Accessibility check failed: %v", err))
-			failCount++
-		} else {
-			printOk("macOS Accessibility input access works.")
-		}
+		printOk("macOS detected. Ensure Accessibility Permissions are granted.")
 	}
 
 	// 3. Libraries
@@ -116,14 +99,14 @@ func RunDoctor() int {
 	checkModel("Silero VAD v5", "models/silero_vad.onnx", MD5_SileroV5, &failCount)
 	checkModel("Silero VAD v4 fallback", "models/silero_vad_v4.onnx", MD5_SileroV4, &failCount)
 
-	asrProvider, apiKeyEnv := configuredASRProvider()
+	asrProvider, apiKey, apiKeyEnv := configuredASRProvider()
 	switch asrProvider {
 	case "", "local":
 		checkModel("Whisper GGML base", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
 	case "openai":
-		checkCloudASRProvider("OpenAI", defaultString(apiKeyEnv, "OPENAI_API_KEY"), &failCount)
+		checkCloudASRProvider("OpenAI", apiKey, defaultString(apiKeyEnv, "OPENAI_API_KEY"), &failCount)
 	case "groq":
-		checkCloudASRProvider("Groq", defaultString(apiKeyEnv, "GROQ_API_KEY"), &failCount)
+		checkCloudASRProvider("Groq", apiKey, defaultString(apiKeyEnv, "GROQ_API_KEY"), &failCount)
 	default:
 		printFail(fmt.Sprintf("Unsupported ASR provider in config: %s", asrProvider))
 		failCount++
@@ -145,16 +128,14 @@ func RunDoctor() int {
 
 	// Summary
 	// 6. Systray Dependencies
-	if goos == "linux" {
-		fmt.Println("\n🔹 6. Systray Dependencies")
-		cmd := exec.Command("pkg-config", "--exists", "ayatana-appindicator3-0.1")
-		if err := cmd.Run(); err != nil {
-			fmt.Println("   ❌ libayatana-appindicator3-dev is missing.")
-			fmt.Println("      Note: 'speak2type tray' requires this for compilation.")
-			fmt.Println("      Fix: sudo apt install libayatana-appindicator3-dev")
-		} else {
-			fmt.Println("   ✅ libayatana-appindicator3-dev found.")
-		}
+	fmt.Println("\n🔹 6. Systray Dependencies")
+	cmd := exec.Command("pkg-config", "--exists", "ayatana-appindicator3-0.1")
+	if err := cmd.Run(); err != nil {
+		fmt.Println("   ❌ libayatana-appindicator3-dev is missing.")
+		fmt.Println("      Note: 'speak2type tray' requires this for compilation.")
+		fmt.Println("      Fix: sudo apt install libayatana-appindicator3-dev")
+	} else {
+		fmt.Println("   ✅ libayatana-appindicator3-dev found.")
 	}
 
 	fmt.Println("\n---------------------------------------------------")
@@ -169,22 +150,37 @@ func RunDoctor() int {
 
 // Helpers
 
-func configuredASRProvider() (provider string, apiKeyEnv string) {
+func configuredASRProvider() (provider string, apiKey string, apiKeyEnv string) {
 	cfg, err := config.Load()
 	if err != nil {
 		printWarn(fmt.Sprintf("Failed to load config for ASR provider check: %v; assuming local", err))
-		return "local", ""
+		return "local", "", ""
 	}
 	provider = strings.ToLower(strings.TrimSpace(cfg.ASR.Provider))
 	if provider == "" {
 		provider = "local"
 	}
-	return provider, strings.TrimSpace(cfg.ASR.APIKeyEnv)
+	apiKey = strings.TrimSpace(cfg.ASR.APIKey)
+	switch provider {
+	case "openai":
+		if key := strings.TrimSpace(cfg.ASR.OpenAIAPIKey); key != "" {
+			apiKey = key
+		}
+	case "groq":
+		if key := strings.TrimSpace(cfg.ASR.GroqAPIKey); key != "" {
+			apiKey = key
+		}
+	}
+	return provider, apiKey, strings.TrimSpace(cfg.ASR.APIKeyEnv)
 }
 
-func checkCloudASRProvider(name, apiKeyEnv string, failCount *int) {
+func checkCloudASRProvider(name, apiKey, apiKeyEnv string, failCount *int) {
+	if strings.TrimSpace(apiKey) != "" {
+		printOk(fmt.Sprintf("%s ASR API key found in config", name))
+		return
+	}
 	if strings.TrimSpace(os.Getenv(apiKeyEnv)) == "" {
-		printFail(fmt.Sprintf("%s ASR API key missing: set %s", name, apiKeyEnv))
+		printFail(fmt.Sprintf("%s ASR API key missing: set %s or provider-specific config key", name, apiKeyEnv))
 		*failCount++
 		return
 	}

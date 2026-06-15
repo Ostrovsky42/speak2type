@@ -50,14 +50,20 @@ func RunSession(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "don't perform actual injection, only log")
 	observe := fs.Duration("observe", 0, "observe and print active window changes for the given duration (e.g. 10s)")
 	focusDelay := fs.Int("focus-delay-ms", 0, "delay before paste (ms)")
-	pasteDelay := fs.Int("paste-delay-ms", 200, "delay after Ctrl+V (ms) (default 200)")
+	pasteDelay := fs.Int("paste-delay-ms", 700, "delay after Ctrl+V (ms) (default 700)")
 	settleDelay := fs.Int("settle-delay-ms", 150, "delay after clipboard write (ms) (default 150)")
 	daemon := fs.Bool("daemon", false, "run in background")
 	hotkey := fs.String("hotkey", "", "global hotkey (default from config, fallback f8)")
 	logLevel := fs.String("log-level", "", "log level: debug, info, warn, error")
+	disableFocusGuard := fs.Bool("disable-focus-guard", false, "disable focus guard (allow pasting even if active window changed)")
 
 	var sigChan chan os.Signal
 	fs.Parse(args)
+
+	if IsDaemonRunning() {
+		fmt.Println("❌ speak2type is already running.")
+		return 1
+	}
 
 	if *daemon && os.Getenv("SPEAK2TYPE_DAEMON") != "1" {
 		fmt.Println("🚀 Spawning Speak2Type in background...")
@@ -83,30 +89,39 @@ func RunSession(args []string) int {
 		return 0
 	}
 
-	if os.Getenv("SPEAK2TYPE_DAEMON") == "1" {
-		// Acquire lock before writing PID
-		if err := AcquireLock(); err != nil {
-			log.Fatalf("❌ Lock failed: %v", err)
-		}
-
-		if err := WritePID(); err != nil {
-			log.Printf("⚠️  Failed to write PID file: %v", err)
-		}
-		defer RemovePID()
-
-		// Setup signal handling for clean exit
-		sigChan = make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// Acquire lock before writing PID
+	if err := AcquireLock(); err != nil {
+		log.Fatalf("❌ Lock failed: %v", err)
 	}
+
+	if err := WritePID(); err != nil {
+		log.Printf("⚠️  Failed to write PID file: %v", err)
+	}
+	defer RemovePID()
+
+	shutdownChan := make(chan struct{})
+	var shutdownOnce sync.Once
+	requestShutdown := func() {
+		shutdownOnce.Do(func() {
+			close(shutdownChan)
+		})
+	}
+
+	// Setup signal handling for clean exit
+	sigChan = make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		s := <-sigChan
+		log.Printf("Received signal %v, shutting down...", s)
+		requestShutdown()
+	}()
 
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
 		log.Printf("config load failed: %v (using defaults)", cfgErr)
 		cfg = config.Default()
 	}
-
-	// Override VAD gate profiles based on config loaded
-	session.OverrideProfiles(cfg.VAD.Threshold, cfg.VAD.MinSpeechDurationMS, cfg.VAD.MinSilenceDurationMS)
 
 	var cfgValue atomic.Value
 	cfgValue.Store(cfg)
@@ -162,7 +177,7 @@ func RunSession(args []string) int {
 	}
 	hotkeyDisplay := formatHotkey(hotkeyValue)
 
-	var applyConfig func(*config.Config)
+	var applyConfig func(*config.Config) error
 	reloadConfig := func() error {
 		newCfg, err := config.Load()
 		if err != nil {
@@ -178,26 +193,16 @@ func RunSession(args []string) int {
 		}
 		cfgValue.Store(newCfg)
 		cfg = newCfg
-
-		// Re-override VAD profiles based on reloaded config
-		session.OverrideProfiles(newCfg.VAD.Threshold, newCfg.VAD.MinSpeechDurationMS, newCfg.VAD.MinSilenceDurationMS)
-
 		if applyConfig != nil {
-			applyConfig(newCfg)
+			if err := applyConfig(newCfg); err != nil {
+				return err
+			}
 		}
 
 		if !hotkeyOverride && newCfg.Session.Hotkey != "" && newCfg.Session.Hotkey != hotkeyValue {
 			log.Printf("config hotkey changed to %q; restart required to apply", newCfg.Session.Hotkey)
 		}
 		return nil
-	}
-
-	shutdownChan := make(chan struct{})
-	var shutdownOnce sync.Once
-	requestShutdown := func() {
-		shutdownOnce.Do(func() {
-			close(shutdownChan)
-		})
 	}
 
 	fmt.Println("🎹 Speak2Type Session Orchestrator")
@@ -207,32 +212,9 @@ func RunSession(args []string) int {
 	fmt.Println("Initializing Audio...")
 	audioConfig := audio.DefaultConfig()
 	devices, _ := audio.ListDevices(context.Background())
-
-	chosenIndex := -1
-	if *deviceIndex >= 0 {
-		chosenIndex = *deviceIndex
-	} else if cfg.Audio.DeviceID != nil {
-		chosenIndex = *cfg.Audio.DeviceID
-	}
-
-	if chosenIndex >= 0 && chosenIndex < len(devices) {
-		audioConfig.DeviceID = &devices[chosenIndex].ID
-		fmt.Printf("  Using device: %s\n", devices[chosenIndex].String())
-	} else {
-		// Fallback to system default microphone device
-		var defaultDev *audio.DeviceInfo
-		for i := range devices {
-			if devices[i].IsDefault {
-				defaultDev = &devices[i]
-				break
-			}
-		}
-		if defaultDev != nil {
-			audioConfig.DeviceID = &defaultDev.ID
-			fmt.Printf("  Using default device: %s\n", defaultDev.String())
-		} else {
-			fmt.Println("  Using system default device (no explicit default marked)")
-		}
+	if *deviceIndex >= 0 && *deviceIndex < len(devices) {
+		audioConfig.DeviceID = &devices[*deviceIndex].ID
+		fmt.Printf("  Using device: %s\n", devices[*deviceIndex].String())
 	}
 
 	audioSvc, err := audio.NewAudioService(audioConfig)
@@ -255,22 +237,6 @@ func RunSession(args []string) int {
 	vadConfig := vad.DefaultConfig()
 	vadConfig.ModelPath = *modelPath
 	vadConfig.SingleLogit = *singleLogit
-	if cfg.VAD.Threshold > 0 {
-		vadConfig.Threshold = cfg.VAD.Threshold
-	}
-
-	// Enable VAD debug prints if log level is debug
-	currentLogLevel := logging.LevelInfo
-	if logLevelOverride != "" {
-		currentLogLevel = logging.Parse(logLevelOverride)
-	} else if cfg != nil {
-		currentLogLevel = logging.Parse(cfg.Logging.Level)
-	}
-	if currentLogLevel == logging.LevelDebug {
-		vadConfig.DebugRMS = true
-		vadConfig.DebugOut = true
-	}
-
 	vadSvc, err := vad.NewVADService(vadConfig)
 	if err != nil {
 		fmt.Printf("❌ VAD Error: %v\n", err)
@@ -286,66 +252,74 @@ func RunSession(args []string) int {
 	}
 	defer vadSvc.Close()
 
-	gate := vad.NewGate(session.GetProfile(session.ProfileDictation).VAD)
+	gate := vad.NewGate(vad.DefaultGateConfig())
+
+	buildASRConfig := func(source *config.Config) asr.ASRConfig {
+		base := asr.DefaultConfig()
+		base.Provider = strings.TrimSpace(source.ASR.Provider)
+		if base.Provider == "" {
+			base.Provider = asr.DefaultConfig().Provider
+		}
+		if strings.TrimSpace(*asrProvider) != "" {
+			base.Provider = strings.TrimSpace(*asrProvider)
+		}
+
+		base.ModelPath = strings.TrimSpace(source.ASR.ModelPath)
+		if base.ModelPath == "" {
+			base.ModelPath = asr.DefaultConfig().ModelPath
+		}
+		if strings.TrimSpace(*asrModelPath) != "" {
+			base.ModelPath = strings.TrimSpace(*asrModelPath)
+		}
+
+		base.Model = strings.TrimSpace(source.ASR.Model)
+		if strings.TrimSpace(*asrCloudModel) != "" {
+			base.Model = strings.TrimSpace(*asrCloudModel)
+		}
+		base.Endpoint = strings.TrimSpace(source.ASR.Endpoint)
+		if strings.TrimSpace(*asrEndpoint) != "" {
+			base.Endpoint = strings.TrimSpace(*asrEndpoint)
+		}
+		base.APIKey = strings.TrimSpace(source.ASR.APIKey)
+		base.OpenAIAPIKey = strings.TrimSpace(source.ASR.OpenAIAPIKey)
+		base.GroqAPIKey = strings.TrimSpace(source.ASR.GroqAPIKey)
+		base.APIKeyEnv = strings.TrimSpace(source.ASR.APIKeyEnv)
+		if strings.TrimSpace(*asrAPIKeyEnv) != "" {
+			base.APIKeyEnv = strings.TrimSpace(*asrAPIKeyEnv)
+		}
+		base.Prompt = strings.TrimSpace(source.ASR.Prompt)
+		if strings.TrimSpace(*asrPrompt) != "" {
+			base.Prompt = strings.TrimSpace(*asrPrompt)
+		}
+		base.ResponseFormat = strings.TrimSpace(source.ASR.ResponseFormat)
+		if base.ResponseFormat == "" {
+			base.ResponseFormat = asr.DefaultConfig().ResponseFormat
+		}
+		if strings.TrimSpace(*asrResponseFormat) != "" {
+			base.ResponseFormat = strings.TrimSpace(*asrResponseFormat)
+		}
+		if source.ASR.TimeoutSeconds > 0 {
+			base.Timeout = time.Duration(source.ASR.TimeoutSeconds) * time.Second
+		}
+		if *asrTimeout > 0 {
+			base.Timeout = *asrTimeout
+		}
+		base.SampleRate = int(audioConfig.SampleRate)
+
+		effectiveLang := strings.TrimSpace(*lang)
+		if !langOverride && source.ASR.LanguageMode != "" {
+			effectiveLang = source.ASR.LanguageMode
+		}
+		if effectiveLang == "" {
+			effectiveLang = "auto"
+		}
+		base.LanguageMode = effectiveLang
+		return base
+	}
 
 	// 3. Init ASR
-	asrConfig := asr.DefaultConfig()
-	asrConfig.Provider = strings.TrimSpace(cfg.ASR.Provider)
-	if asrConfig.Provider == "" {
-		asrConfig.Provider = asr.DefaultConfig().Provider
-	}
-	if strings.TrimSpace(*asrProvider) != "" {
-		asrConfig.Provider = strings.TrimSpace(*asrProvider)
-	}
-
-	asrConfig.ModelPath = strings.TrimSpace(cfg.ASR.ModelPath)
-	if asrConfig.ModelPath == "" {
-		asrConfig.ModelPath = asr.DefaultConfig().ModelPath
-	}
-	if strings.TrimSpace(*asrModelPath) != "" {
-		asrConfig.ModelPath = strings.TrimSpace(*asrModelPath)
-	}
-
-	asrConfig.Model = strings.TrimSpace(cfg.ASR.Model)
-	if strings.TrimSpace(*asrCloudModel) != "" {
-		asrConfig.Model = strings.TrimSpace(*asrCloudModel)
-	}
-	asrConfig.Endpoint = strings.TrimSpace(cfg.ASR.Endpoint)
-	if strings.TrimSpace(*asrEndpoint) != "" {
-		asrConfig.Endpoint = strings.TrimSpace(*asrEndpoint)
-	}
-	asrConfig.APIKeyEnv = strings.TrimSpace(cfg.ASR.APIKeyEnv)
-	if strings.TrimSpace(*asrAPIKeyEnv) != "" {
-		asrConfig.APIKeyEnv = strings.TrimSpace(*asrAPIKeyEnv)
-	}
-	asrConfig.Prompt = strings.TrimSpace(cfg.ASR.Prompt)
-	if strings.TrimSpace(*asrPrompt) != "" {
-		asrConfig.Prompt = strings.TrimSpace(*asrPrompt)
-	}
-	asrConfig.ResponseFormat = strings.TrimSpace(cfg.ASR.ResponseFormat)
-	if asrConfig.ResponseFormat == "" {
-		asrConfig.ResponseFormat = asr.DefaultConfig().ResponseFormat
-	}
-	if strings.TrimSpace(*asrResponseFormat) != "" {
-		asrConfig.ResponseFormat = strings.TrimSpace(*asrResponseFormat)
-	}
-	if cfg.ASR.TimeoutSeconds > 0 {
-		asrConfig.Timeout = time.Duration(cfg.ASR.TimeoutSeconds) * time.Second
-	}
-	if *asrTimeout > 0 {
-		asrConfig.Timeout = *asrTimeout
-	}
-	asrConfig.SampleRate = int(audioConfig.SampleRate)
-
-	effectiveLang := strings.TrimSpace(*lang)
-	if !langOverride && cfg.ASR.LanguageMode != "" {
-		effectiveLang = cfg.ASR.LanguageMode
-	}
-	if effectiveLang == "" {
-		effectiveLang = "auto"
-	}
-	asrConfig.LanguageMode = effectiveLang
-
+	asrConfig := buildASRConfig(cfg)
+	effectiveLang := asrConfig.LanguageMode
 	fmt.Printf("Initializing ASR (%s)...\n", asrConfig.Provider)
 	asrSvc, err := asr.NewASRService(asrConfig)
 	if err != nil {
@@ -424,29 +398,47 @@ func RunSession(args []string) int {
 	}
 
 	orchConfig := session.Config{
-		SampleRate: 16000,
-		ChunkSize:  vadConfig.ChunkSize,
-		NoRestore:  *noRestore,
+		SampleRate:        16000,
+		ChunkSize:         vadConfig.ChunkSize,
+		NoRestore:         *noRestore,
+		DisableFocusGuard: *disableFocusGuard || cfg.Session.DisableFocusGuard,
 	}
 
 	orch := session.NewOrchestrator(orchConfig, deps)
 	orch.SetEventBus(bus)
 	orch.SetLanguage(effectiveLang)
 
-	applyConfig = func(newCfg *config.Config) {
-		if langOverride {
-			return
+	applyConfig = func(newCfg *config.Config) error {
+		nextASRConfig := buildASRConfig(newCfg)
+		currentASRConfig := asrSvc.Config()
+		currentProviderConfig := currentASRConfig
+		nextProviderConfig := nextASRConfig
+		currentProviderConfig.LanguageMode = ""
+		nextProviderConfig.LanguageMode = ""
+
+		if currentProviderConfig != nextProviderConfig {
+			if err := asrSvc.Reconfigure(nextASRConfig); err != nil {
+				log.Printf("ASR reconfigure failed: %v", err)
+				bus.Publish(event.Event{
+					Type:      event.TypeError,
+					Level:     event.LevelError,
+					State:     event.StateError,
+					ErrorCode: "asr_reconfigure_failed",
+					Message:   err.Error(),
+					Hint:      "check ASR provider settings, model path, API key, and network availability",
+				})
+				return err
+			}
+			log.Printf("ASR provider reconfigured: %s", nextASRConfig.Provider)
+			orch.SetLanguage(nextASRConfig.LanguageMode)
+			return nil
 		}
-		newLang := strings.TrimSpace(newCfg.ASR.LanguageMode)
-		if newLang == "" {
-			newLang = "auto"
+
+		if nextASRConfig.LanguageMode != asrSvc.LanguageMode() {
+			asrSvc.SetLanguageMode(nextASRConfig.LanguageMode)
+			orch.SetLanguage(nextASRConfig.LanguageMode)
 		}
-		if newLang != asrSvc.LanguageMode() {
-			asrSvc.SetLanguageMode(newLang)
-			orch.SetLanguage(newLang)
-		}
-		// Re-apply the current profile to update the VAD Gate configuration
-		orch.SetProfile(orch.Profile())
+		return nil
 	}
 
 	// 5. IPC Server
@@ -547,19 +539,76 @@ func RunSession(args []string) int {
 
 	isDaemon := os.Getenv("SPEAK2TYPE_DAEMON") == "1"
 
+	var progressMu sync.Mutex
+	var progressStop chan struct{}
+	stopProcessingProgress := func() {
+		progressMu.Lock()
+		stop := progressStop
+		progressStop = nil
+		progressMu.Unlock()
+		if stop != nil {
+			close(stop)
+			if !isDaemon {
+				fmt.Print("\r\033[K")
+			}
+		}
+	}
+	startProcessingProgress := func() {
+		progressMu.Lock()
+		if progressStop != nil {
+			progressMu.Unlock()
+			return
+		}
+		stop := make(chan struct{})
+		progressStop = stop
+		progressMu.Unlock()
+
+		go func(start time.Time) {
+			frames := []string{"⏳", "⌛"}
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			ticks := 0
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					ticks++
+					elapsed := time.Since(start).Truncate(time.Second)
+					state := orch.GetIPCState()
+					if isDaemon {
+						if ticks%10 == 0 {
+							fmt.Printf("⏳ Processing... elapsed=%s pending=%d\n", elapsed, state.PendingASR)
+						}
+					} else {
+						fmt.Printf("\r\033[K%s Processing... %s pending=%d", frames[ticks%len(frames)], elapsed, state.PendingASR)
+					}
+				}
+			}
+		}(time.Now())
+	}
+
 	// Event Printer
 	go func() {
+		defer stopProcessingProgress()
 		for evt := range orch.Events() {
 			switch evt.Type {
 			case session.EventStateChange:
+				if evt.State == session.StateProcessing {
+					startProcessingProgress()
+				} else {
+					stopProcessingProgress()
+				}
 				fmt.Printf("\n🔄 State -> %s\n", evt.State)
 			case session.EventFullText:
+				stopProcessingProgress()
 				if isDaemon {
 					fmt.Printf("\n📝 %s\n", evt.Text)
 				} else {
 					fmt.Printf("\r\033[K📝 %s", evt.Text)
 				}
 			case session.EventError:
+				stopProcessingProgress()
 				if evt.Text != "" {
 					fmt.Printf("\n⚠️  Injection Blocked: %v (text: %q)\n", evt.Error, evt.Text)
 				} else {
@@ -625,13 +674,7 @@ func RunSession(args []string) int {
 	defer hl.Stop()
 
 	if os.Getenv("SPEAK2TYPE_DAEMON") == "1" {
-		// Wait for signal instead of stdin
-		select {
-		case s := <-sigChan:
-			log.Printf("Received signal %v, shutting down daemon...", s)
-		case <-shutdownChan:
-			log.Printf("Shutdown requested, shutting down daemon...")
-		}
+		<-shutdownChan
 		return 0
 	}
 
@@ -663,7 +706,6 @@ func RunSession(args []string) int {
 }
 
 func startLogSubscriber(bus *event.Bus, levelFn func() logging.Level) {
-	isDaemon := os.Getenv("SPEAK2TYPE_DAEMON") == "1"
 	ch, _ := bus.Subscribe("log", 200)
 	go func() {
 		for evt := range ch {
@@ -672,7 +714,7 @@ func startLogSubscriber(bus *event.Bus, levelFn func() logging.Level) {
 			if !logging.Allowed(threshold, msgLevel) {
 				continue
 			}
-			log.Println(formatEvent(evt, isDaemon))
+			log.Println(formatEvent(evt))
 		}
 	}()
 }
@@ -757,49 +799,7 @@ func formatHotkey(value string) string {
 	return strings.ToUpper(value)
 }
 
-func formatEvent(evt event.Event, isDaemon bool) string {
-	if !isDaemon {
-		// Human-readable format for interactive console
-		timestamp := evt.Time.Format("15:04:05.000")
-		var emoji string
-		switch evt.Type {
-		case event.TypeAppStarted:
-			emoji = "🚀"
-		case event.TypeHotkeyRegistered:
-			emoji = "⌨️"
-		case event.TypeRecordingStarted:
-			emoji = "🎙️"
-		case event.TypeRecordingStopped:
-			emoji = "⏹️"
-		case event.TypeTranscriptionStarted:
-			emoji = "⏳"
-		case event.TypeTranscriptionFinished:
-			emoji = "📝"
-		case event.TypeInjectionStarted:
-			emoji = "📋"
-		case event.TypeInjectionFinished:
-			emoji = "✅"
-		case event.TypeDone:
-			emoji = "🏁"
-		case event.TypeError:
-			emoji = "❌"
-		default:
-			emoji = "🔹"
-		}
-
-		parts := []string{
-			fmt.Sprintf("[%s] %s %-22s | State: %-12s", timestamp, emoji, strings.ToUpper(string(evt.Type)), evt.State),
-		}
-		if evt.Message != "" {
-			parts = append(parts, fmt.Sprintf("msg=%q", evt.Message))
-		}
-		if evt.Hint != "" {
-			parts = append(parts, fmt.Sprintf("hint=%q", evt.Hint))
-		}
-		return strings.Join(parts, " ")
-	}
-
-	// Structured logfmt for daemon log files
+func formatEvent(evt event.Event) string {
 	level := evt.Level
 	if level == "" {
 		level = event.LevelInfo

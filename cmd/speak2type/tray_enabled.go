@@ -12,32 +12,55 @@ import (
 )
 
 func handleDefaultCommand() {
-	if os.Getenv("SPEAK2TYPE_TRAY_BACKGROUND") != "1" {
-		fmt.Println("🚀 Starting Speak2Type...")
-		if err := cli.StartDaemonIfNeeded(); err != nil {
-			fmt.Printf("❌ Failed to start background daemon: %v\n", err)
-			os.Exit(1)
-		}
+	printUsage()
+	os.Exit(0)
+}
 
-		cmd := exec.Command(os.Args[0])
-		cmd.Env = os.Environ()
-		cmd.Env = append(cmd.Env, "SPEAK2TYPE_TRAY_BACKGROUND=1")
-		if err := cmd.Start(); err != nil {
-			fmt.Printf("❌ Failed to start tray in background: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("✅ Speak2Type is running in the background.")
-		fmt.Println("💡 Look for the microphone icon in your system tray!")
+func handleRunCommand(args []string) {
+	if hasArg(args, "--daemon") {
+		os.Exit(cli.RunSession(args))
+	}
+
+	if cli.IsTrayRunning() {
+		fmt.Println("⚠️  Speak2Type tray application is already running.")
 		os.Exit(0)
 	}
 
-	os.Exit(tray.RunTray())
+	fmt.Println("🚀 Starting Speak2Type...")
+	if err := cli.StartDaemonIfNeededWithArgs(args); err != nil {
+		fmt.Printf("❌ Failed to start background daemon: %v\n", err)
+		os.Exit(1)
+	}
+
+	cmd := exec.Command(os.Args[0], "tray")
+	cmd.Env = os.Environ()
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("❌ Failed to start tray in background: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ Speak2Type is running in the background.")
+	fmt.Println("💡 Look for the microphone icon in your system tray!")
+	os.Exit(0)
 }
 
 func handleTrayCommand() {
+	if cli.IsTrayRunning() {
+		fmt.Println("⚠️  Speak2Type tray application is already running.")
+		os.Exit(0)
+	}
+
 	if err := cli.StartDaemonIfNeeded(); err != nil {
 		fmt.Printf("❌ Failed to start background daemon: %v\n", err)
 		os.Exit(1)
 	}
 	os.Exit(tray.RunTray())
+}
+
+func hasArg(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
 }

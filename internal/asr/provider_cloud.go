@@ -66,9 +66,12 @@ func newCloudProvider(config ASRConfig, defaults cloudDefaults) (*cloudProvider,
 	if apiKeyEnv == "" {
 		apiKeyEnv = defaults.apiKeyEnv
 	}
-	apiKey := strings.TrimSpace(os.Getenv(apiKeyEnv))
+	apiKey := providerAPIKey(config, defaults.name)
 	if apiKey == "" {
-		return nil, fmt.Errorf("%s API key is required: set %s", defaults.name, apiKeyEnv)
+		apiKey = strings.TrimSpace(os.Getenv(apiKeyEnv))
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("%s API key is required: set %s or provider-specific config key", defaults.name, apiKeyEnv)
 	}
 
 	endpoint := strings.TrimSpace(config.Endpoint)
@@ -107,6 +110,20 @@ func newCloudProvider(config ASRConfig, defaults cloudDefaults) (*cloudProvider,
 		sampleRate:     sampleRate,
 		client:         &http.Client{Timeout: timeout},
 	}, nil
+}
+
+func providerAPIKey(config ASRConfig, provider string) string {
+	switch provider {
+	case ProviderOpenAI:
+		if key := strings.TrimSpace(config.OpenAIAPIKey); key != "" {
+			return key
+		}
+	case ProviderGroq:
+		if key := strings.TrimSpace(config.GroqAPIKey); key != "" {
+			return key
+		}
+	}
+	return strings.TrimSpace(config.APIKey)
 }
 
 func (p *cloudProvider) Transcribe(ctx context.Context, samples []float32) (string, error) {

@@ -132,7 +132,114 @@ func RemovePID() {
 		syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		lockFile.Close()
 		os.Remove(getLockPath())
+		lockFile = nil
 	}
+}
+func getTrayPIDPath() string  { return GetXDGPath("speak2type", "speak2type_tray.pid", false) }
+func getTrayLockPath() string { return GetXDGPath("speak2type", "speak2type_tray.lock", false) }
+
+var trayLockFile *os.File
+
+func AcquireTrayLock() error {
+	path := getTrayLockPath()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("speak2type tray is already running (locked at %s)", path)
+	}
+	trayLockFile = f // Keep it open
+	return nil
+}
+
+func WriteTrayPID() error {
+	pid := os.Getpid()
+	return os.WriteFile(getTrayPIDPath(), []byte(strconv.Itoa(pid)), 0644)
+}
+
+func RemoveTrayPID() {
+	os.Remove(getTrayPIDPath())
+	if trayLockFile != nil {
+		syscall.Flock(int(trayLockFile.Fd()), syscall.LOCK_UN)
+		trayLockFile.Close()
+		os.Remove(getTrayLockPath())
+		trayLockFile = nil
+	}
+}
+
+// RunStopTray finds the running tray process via PID file and kills it.
+func RunStopTray() int {
+	pidPath := getTrayPIDPath()
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0 // No active tray
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		os.Remove(pidPath)
+		return 0
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		os.Remove(pidPath)
+		return 0
+	}
+
+	// Send SIGTERM
+	process.Signal(syscall.SIGTERM)
+
+	// Wait up to 2 seconds for exit
+	start := time.Now()
+	for time.Since(start) < 2*time.Second {
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			os.Remove(pidPath)
+			return 0
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Kill if still there
+	process.Signal(syscall.SIGKILL)
+	os.Remove(pidPath)
+	return 0
+}
+
+// RunRestart terminates the running daemon and tray, and spawns a new instance.
+func RunRestart() int {
+	fmt.Println("🔄 Restarting Speak2Type...")
+
+	// 1. Stop tray
+	RunStopTray()
+
+	// 2. Stop daemon
+	RunStop()
+
+	// Wait a moment for processes to clean up and locks to release
+	time.Sleep(500 * time.Millisecond)
+
+	// 3. Start them again
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("❌ Failed to get executable path: %v\n", err)
+		return 1
+	}
+
+	cmd := exec.Command(execPath, "run")
+	cmd.Env = os.Environ()
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("❌ Failed to restart Speak2Type: %v\n", err)
+		return 1
+	}
+
+	fmt.Println("✅ Speak2Type restarted successfully.")
+	return 0
 }
 
 // IsDaemonRunning returns true if the daemon process is active and running.
@@ -168,8 +275,46 @@ func IsDaemonRunning() bool {
 	return strings.Contains(string(cmdline), "speak2type")
 }
 
+// IsTrayRunning returns true if the tray process is active and running.
+func IsTrayRunning() bool {
+	pidPath := getTrayPIDPath()
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return false
+	}
+
+	// Double check the process actually exists
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	// Signal 0 checks process existence / permissions
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+
+	// Check cmdline to avoid stale PID conflicts
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(cmdline), "speak2type")
+}
+
 // StartDaemonIfNeeded checks if the daemon is running and, if not, starts it.
 func StartDaemonIfNeeded() error {
+	return StartDaemonIfNeededWithArgs(nil)
+}
+
+// StartDaemonIfNeededWithArgs starts the daemon with extra run flags when needed.
+func StartDaemonIfNeededWithArgs(args []string) error {
 	if IsDaemonRunning() {
 		return nil
 	}
@@ -182,7 +327,15 @@ func StartDaemonIfNeeded() error {
 
 	logPath := GetLogPath()
 
-	cmd := exec.Command(execPath, "run", "--daemon")
+	daemonArgs := []string{"run", "--daemon"}
+	for _, arg := range args {
+		if arg == "--daemon" {
+			continue
+		}
+		daemonArgs = append(daemonArgs, arg)
+	}
+
+	cmd := exec.Command(execPath, daemonArgs...)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "SPEAK2TYPE_DAEMON=1")
 

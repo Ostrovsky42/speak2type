@@ -11,7 +11,6 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		handleDefaultCommand()
-		return
 	}
 
 	command := os.Args[1]
@@ -23,17 +22,17 @@ func main() {
 	args := os.Args[2:]
 
 	switch command {
-	case "devices", "list-devices":
-		os.Exit(cli.RunDevices())
 	case "doctor":
 		// Doctor doesn't take args currently, but good to be consistent
 		os.Exit(cli.RunDoctor())
 	case "run":
-		os.Exit(cli.RunSession(args))
+		handleRunCommand(args)
 	case "inject-test":
 		os.Exit(cli.RunInjectTest(args))
 	case "stop":
-		os.Exit(cli.RunStop())
+		os.Exit(cli.RunStop() + cli.RunStopTray())
+	case "restart":
+		os.Exit(cli.RunRestart())
 	case "status":
 		os.Exit(cli.RunStatus())
 	case "install-service":
@@ -47,7 +46,7 @@ func main() {
 	case "version":
 		fmt.Printf("Speak2Type Voice Input v%s\n", version.Version)
 	default:
-		fmt.Println("Usage: speak2type [run|devices|doctor|inject-test|stop|status|install-service|enable|disable|version]")
+		fmt.Println("Usage: speak2type [run|doctor|inject-test|stop|restart|status|install-service|enable|disable|version]")
 		os.Exit(1)
 	}
 }
@@ -56,11 +55,11 @@ func printUsage() {
 	fmt.Println("Usage: speak2type <command> [args]")
 	fmt.Println("       speak2type --version")
 	fmt.Println("Commands:")
-	fmt.Println("  devices      List available audio input devices (microphones)")
 	fmt.Println("  doctor       Check system environment")
-	fmt.Println("  run          Start voice session")
+	fmt.Println("  run          Start daemon + tray in tray builds; start voice session otherwise")
 	fmt.Println("  inject-test  Test text injection")
-	fmt.Println("  stop         Stop running daemon")
+	fmt.Println("  stop         Stop running daemon and tray")
+	fmt.Println("  restart      Restart daemon and tray")
 	fmt.Println("  status       Show daemon status")
 	fmt.Println("  tray         Start tray UI (requires tray build tag)")
 	fmt.Println("  install-service  Write systemd unit file")
