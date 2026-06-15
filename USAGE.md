@@ -75,7 +75,7 @@ Useful cloud flags:
 speak2type run --asr-provider groq --asr-timeout 10s --asr-prompt "Russian technical dictation"
 ```
 
-The tray menu can save the ASR provider and separate OpenAI/Groq API keys under `ASR Provider`. Keys saved from tray are stored as plaintext in `~/.config/speak2type/config.json`; restart the daemon after changing provider or key.
+The tray menu can save the ASR provider and separate OpenAI/Groq API keys under `ASR Provider`. Keys saved from tray are stored as plaintext in `~/.config/speak2type/config.json`; changes are reloaded by the daemon immediately.
 
 ---
 

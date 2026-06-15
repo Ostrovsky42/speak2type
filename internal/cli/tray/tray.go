@@ -80,7 +80,7 @@ func onReady() {
 	mASRLocal := mASR.AddSubMenuItemCheckbox("Local whisper.cpp", "Use local Whisper model", true)
 	mASROpenAI := mASR.AddSubMenuItemCheckbox("OpenAI", "Use OpenAI audio transcriptions", false)
 	mASRGroq := mASR.AddSubMenuItemCheckbox("Groq", "Use Groq speech-to-text", false)
-	mASR.AddSubMenuItem("Restart daemon after changing provider", "Provider changes apply after daemon restart").Disable()
+	mASR.AddSubMenuItem("Changes apply immediately", "Saved provider settings are reloaded by the daemon").Disable()
 	mOpenAIKey := mASR.AddSubMenuItem("Set OpenAI API Key", "Store OpenAI API key in config")
 	mGroqKey := mASR.AddSubMenuItem("Set Groq API Key", "Store Groq API key in config")
 	applyASRProviderChecks(mASRLocal, mASROpenAI, mASRGroq)
@@ -90,8 +90,7 @@ func onReady() {
 	mLogs := systray.AddMenuItem("Open Logs", "View daemon logs")
 	systray.AddSeparator()
 	mRestart := systray.AddMenuItem("Restart Speak2Type", "Restart daemon and tray")
-	mQuit := systray.AddMenuItem("Quit Tray", "Exit tray application")
-	mStopDaemon := systray.AddMenuItem("Stop Daemon", "Terminate background process")
+	mStop := systray.AddMenuItem("Stop Speak2Type", "Stop daemon and tray")
 
 	client = ipc.NewClient(daemon.GetSocketPath())
 
@@ -170,10 +169,9 @@ func onReady() {
 				execPath, _ := os.Executable()
 				cmd := exec.Command(execPath, "restart")
 				_ = cmd.Start()
-			case <-mStopDaemon.ClickedCh:
+			case <-mStop.ClickedCh:
 				callIPC("quit", nil)
-			case <-mQuit.ClickedCh:
-				systray.Quit()
+				time.AfterFunc(200*time.Millisecond, systray.Quit)
 			}
 		}
 	}()
@@ -436,7 +434,7 @@ func saveASRProvider(provider string) error {
 		return err
 	}
 	callIPC("reload_config", nil)
-	showInfo("ASR provider saved. Restart the daemon to apply provider changes.")
+	showInfo("ASR provider saved and reloaded.")
 	return nil
 }
 
@@ -464,7 +462,7 @@ func saveASRAPIKey(provider, key string) error {
 		return err
 	}
 	callIPC("reload_config", nil)
-	showInfo("API key saved in config. Restart the daemon to apply ASR provider changes.")
+	showInfo("API key saved in config and reloaded.")
 	return nil
 }
 

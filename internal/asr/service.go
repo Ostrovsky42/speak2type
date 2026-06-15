@@ -138,16 +138,16 @@ func (s *ASRService) processWindow(window AudioWindow) {
 	timeout := s.config.Timeout
 	provider := s.provider
 	sampleRate := s.config.SampleRate
-	s.mu.RUnlock()
 
 	ctx := s.ctx
 	cancel := func() {}
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
-	defer cancel()
 
 	text, err := provider.Transcribe(ctx, window.Samples)
+	cancel()
+	s.mu.RUnlock()
 	if err != nil {
 		s.results <- TranscriptionChunk{Error: fmt.Errorf("processing failed: %w", err)}
 		return
@@ -162,6 +162,37 @@ func (s *ASRService) processWindow(window AudioWindow) {
 		EndSec:   float32(len(window.Samples)) / float32(sampleRate),
 		Prob:     1.0,
 	}
+}
+
+// Reconfigure swaps the active ASR provider while keeping queues and workers alive.
+func (s *ASRService) Reconfigure(config ASRConfig) error {
+	config.Provider = normalizeProvider(config.Provider)
+	if config.SampleRate == 0 {
+		config.SampleRate = 16000
+	}
+
+	provider, err := newProvider(config)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	oldProvider := s.provider
+	s.config = config
+	s.provider = provider
+	s.mu.Unlock()
+
+	if closer, ok := oldProvider.(closeProvider); ok {
+		_ = closer.Close()
+	}
+	return nil
+}
+
+// Config returns a snapshot of the active ASR configuration.
+func (s *ASRService) Config() ASRConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config
 }
 
 // SetLanguageMode updates the ASR language mode at runtime.

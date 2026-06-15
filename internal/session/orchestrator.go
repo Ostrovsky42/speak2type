@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -69,9 +70,10 @@ type Orchestrator struct {
 	bus event.Publisher
 
 	// Pipeline state
-	speechBuffer []float32
-	isSpeaking   bool
-	silenceStart time.Time // Track silence duration
+	speechBuffer       []float32
+	sessionAudioBuffer []float32
+	isSpeaking         bool
+	silenceStart       time.Time // Track silence duration
 
 	pendingASR int // Counter for in-flight ASR jobs
 
@@ -216,6 +218,7 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 	o.deps.Gate.Reset()
 	o.deps.Merger.Reset()
 	o.speechBuffer = nil
+	o.sessionAudioBuffer = nil
 	o.isSpeaking = false
 	o.preRollBuffer = nil
 	o.committedLen = 0
@@ -271,6 +274,9 @@ func (o *Orchestrator) StopSession() {
 	// Flush any remaining speech buffer up to ASR
 	o.mu.Lock()
 	o.flushAudioLocked()
+	if o.pendingASR == 0 {
+		o.flushSessionAudioFallbackLocked()
+	}
 	done := o.pendingASR == 0
 	o.mu.Unlock()
 
@@ -334,7 +340,10 @@ func (o *Orchestrator) loop() {
 				o.events <- Event{Type: EventError, Error: res.Error}
 				o.publishError("asr_error", res.Error.Error(), "check models and CPU compatibility")
 			}
-			if res.Text != "" {
+			if res.Text == "" {
+				fmt.Printf(" [Orch] ASR returned empty text (lang=%s)\n", res.Language)
+			} else {
+				fmt.Printf(" [Orch] ASR raw: %q\n", res.Text)
 				committed, tentative := o.deps.Merger.Process(res.Text)
 
 				if committed != "" {
@@ -380,6 +389,9 @@ func (o *Orchestrator) loop() {
 				continue
 			}
 
+			chunkCopy := make([]float32, len(chunk))
+			copy(chunkCopy, chunk)
+
 			// Run VAD (avoid holding orchestrator lock; ONNX can stall)
 			prob, err := o.deps.VAD.Process(chunk)
 			if err != nil {
@@ -393,6 +405,7 @@ func (o *Orchestrator) loop() {
 				o.mu.Unlock()
 				continue
 			}
+			o.appendSessionAudioLocked(chunkCopy)
 
 			if active {
 				if !o.isSpeaking {
@@ -415,9 +428,7 @@ func (o *Orchestrator) loop() {
 					o.silenceStart = time.Now()
 				}
 
-				c := make([]float32, len(chunk))
-				copy(c, chunk)
-				o.preRollBuffer = append(o.preRollBuffer, c)
+				o.preRollBuffer = append(o.preRollBuffer, chunkCopy)
 				if len(o.preRollBuffer) > o.preRollLimit {
 					o.preRollBuffer = o.preRollBuffer[1:]
 				}
@@ -431,16 +442,43 @@ func (o *Orchestrator) loop() {
 	}
 }
 
-// flushAudioLocked submits the current buffer to ASR and clears it.
-
+// flushAudioLocked submits the current VAD speech buffer to ASR and clears it.
 func (o *Orchestrator) flushAudioLocked() {
 	if len(o.speechBuffer) == 0 {
 		return
 	}
+	o.submitAudioLocked(o.speechBuffer, "vad")
+	o.speechBuffer = nil
+}
 
-	// Copy buffer to avoid race (ASR runs async)
-	buf := make([]float32, len(o.speechBuffer))
-	copy(buf, o.speechBuffer)
+func (o *Orchestrator) appendSessionAudioLocked(chunk []float32) {
+	o.sessionAudioBuffer = append(o.sessionAudioBuffer, chunk...)
+	maxSamples := o.conf.SampleRate * 30
+	if maxSamples <= 0 {
+		maxSamples = 16000 * 30
+	}
+	if overflow := len(o.sessionAudioBuffer) - maxSamples; overflow > 0 {
+		o.sessionAudioBuffer = o.sessionAudioBuffer[overflow:]
+	}
+}
+
+func (o *Orchestrator) flushSessionAudioFallbackLocked() {
+	minSamples := o.conf.SampleRate / 4
+	if minSamples <= 0 {
+		minSamples = 16000 / 4
+	}
+	if len(o.sessionAudioBuffer) < minSamples {
+		fmt.Printf(" [Orch] No VAD speech buffer and fallback audio too short: %d samples\n", len(o.sessionAudioBuffer))
+		return
+	}
+	fmt.Printf(" [Orch] No VAD speech buffer; submitting full session fallback: %.2fs audio\n", float64(len(o.sessionAudioBuffer))/float64(o.effectiveSampleRate()))
+	o.submitAudioLocked(o.sessionAudioBuffer, "session_fallback")
+	o.sessionAudioBuffer = nil
+}
+
+func (o *Orchestrator) submitAudioLocked(samples []float32, source string) {
+	buf := make([]float32, len(samples))
+	copy(buf, samples)
 
 	dropped, err := o.deps.ASR.Submit(asr.AudioWindow{Samples: buf})
 	if dropped > 0 {
@@ -452,11 +490,18 @@ func (o *Orchestrator) flushAudioLocked() {
 	}
 	if err == nil {
 		o.pendingASR++
+		fmt.Printf(" [Orch] Submitted %s audio to ASR: %.2fs (%d samples)\n", source, float64(len(buf))/float64(o.effectiveSampleRate()), len(buf))
 	} else {
 		o.events <- Event{Type: EventError, Error: err}
 		o.publishError("asr_submit_failed", err.Error(), "check model files and available memory")
 	}
-	o.speechBuffer = nil
+}
+
+func (o *Orchestrator) effectiveSampleRate() int {
+	if o.conf.SampleRate > 0 {
+		return o.conf.SampleRate
+	}
+	return 16000
 }
 
 func (o *Orchestrator) addCommittedLen(n int) {
@@ -530,9 +575,13 @@ func (o *Orchestrator) injectText(text string) {
 
 	if !o.conf.DisableFocusGuard {
 		if err := o.deps.Input.FocusTargetWindow(); err != nil {
-			errMsg := fmt.Sprintf("focus guard: failed to restore target window %q: %v", o.focusWindow, err)
-			o.events <- Event{Type: EventError, Text: text, Error: fmt.Errorf("%s", errMsg)}
-			o.publishError("focus_guard", errMsg, "refocus the target window and retry")
+			if errors.Is(err, input.ErrInjectionDisabled) {
+				o.publishError("inject_unavailable", "input injection disabled", "enable injection permissions or avoid Wayland without --force-wayland-inject")
+			} else {
+				errMsg := fmt.Sprintf("focus guard: failed to activate captured target window %q: %v", o.focusWindow, err)
+				o.events <- Event{Type: EventError, Text: text, Error: fmt.Errorf("%s", errMsg)}
+				o.publishError("focus_guard", errMsg, "start recording from the target app with the hotkey, or disable focus guard")
+			}
 			if state == StateProcessing {
 				o.markInjectionFailed()
 			}
@@ -540,9 +589,9 @@ func (o *Orchestrator) injectText(text string) {
 		}
 		if !o.deps.Input.IsTargetWindowActive() {
 			currentWindow := o.deps.Input.GetActiveWindow()
-			errMsg := fmt.Sprintf("focus guard: target window %q is not active (current %q, injection cancelled)", o.focusWindow, currentWindow)
+			errMsg := fmt.Sprintf("focus guard: captured target window %q is not active (current %q, injection cancelled)", o.focusWindow, currentWindow)
 			o.events <- Event{Type: EventError, Text: text, Error: fmt.Errorf("%s", errMsg)}
-			o.publishError("focus_guard", errMsg, "refocus the target window and retry")
+			o.publishError("focus_guard", errMsg, "start recording from the target app with the hotkey, or disable focus guard")
 			if state == StateProcessing {
 				o.markInjectionFailed()
 			}
@@ -551,7 +600,11 @@ func (o *Orchestrator) injectText(text string) {
 	}
 
 	if err := o.deps.Input.Paste(text+" ", !o.conf.NoRestore); err != nil {
-		o.publishError("inject_failed", err.Error(), "check permissions and active window focus")
+		if errors.Is(err, input.ErrInjectionDisabled) {
+			o.publishError("inject_unavailable", "input injection disabled", "enable injection permissions or avoid Wayland without --force-wayland-inject")
+		} else {
+			o.publishError("inject_failed", err.Error(), "check permissions and active window focus")
+		}
 		if state == StateProcessing {
 			o.markInjectionFailed()
 		}
