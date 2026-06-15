@@ -43,13 +43,22 @@ make doctor
 make build
 ```
 
-The binary is created at `./bin/speak2type`. Models are not stored in Git; `make deps` must complete before the default `run` command can start.
+The binary is created at `./bin/speak2type`. Models are not stored in Git; `make deps` must complete before the default local-ASR `run` command can start. OpenAI/Groq ASR providers do not need the local Whisper GGML model, but they do require API keys in the environment.
 
 ## Run
 
 ```bash
 ./bin/speak2type run -device-index 0 -lang ru
 ```
+
+## Cloud ASR Providers
+
+```bash
+OPENAI_API_KEY=... ./bin/speak2type run --asr-provider openai --asr-cloud-model gpt-4o-mini-transcribe
+GROQ_API_KEY=... ./bin/speak2type run --asr-provider groq --asr-cloud-model whisper-large-v3-turbo
+```
+
+Use `--asr-api-key-env CUSTOM_ENV` if your key is stored under a different environment variable.
 
 ## Install as a User Service (systemd)
 

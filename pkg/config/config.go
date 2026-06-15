@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Ostrovsky42/speak2type/internal/version"
 )
@@ -39,10 +40,17 @@ type VADConfig struct {
 	MinSilenceDurationMS int     `json:"min_silence_duration_ms"` // 500ms
 }
 
-// ASRConfig defines Automatic Speech Recognition parameters
+// ASRConfig defines Automatic Speech Recognition parameters.
 type ASRConfig struct {
-	ModelPath        string `json:"model_path"`        // Path to ggml model
+	Provider         string `json:"provider"`          // "local", "openai", or "groq"
+	ModelPath        string `json:"model_path"`        // Path to local ggml model
+	Model            string `json:"model"`             // Cloud provider model ID
+	Endpoint         string `json:"endpoint"`          // Optional OpenAI-compatible transcription endpoint override
+	APIKeyEnv        string `json:"api_key_env"`       // Environment variable containing the cloud API key
 	LanguageMode     string `json:"language_mode"`     // "auto", "ru", "en"
+	Prompt           string `json:"prompt"`            // Optional ASR context prompt
+	ResponseFormat   string `json:"response_format"`   // "json" or "text" for cloud providers
+	TimeoutSeconds   int    `json:"timeout_seconds"`   // Cloud request timeout
 	PrimaryLanguage  string `json:"primary_language"`  // "ru"
 	FallbackLanguage string `json:"fallback_language"` // "en"
 	Translate        bool   `json:"translate"`         // false (transcribe, don't translate)
@@ -97,8 +105,11 @@ func Default() *Config {
 			MinSilenceDurationMS: 500,
 		},
 		ASR: ASRConfig{
+			Provider:         "local",
 			ModelPath:        "models/ggml-base.bin",
 			LanguageMode:     "auto",
+			ResponseFormat:   "json",
+			TimeoutSeconds:   30,
 			PrimaryLanguage:  "ru",
 			FallbackLanguage: "en",
 			Translate:        false,
@@ -205,12 +216,20 @@ func (c *Config) Save() error {
 func (c *Config) Validate() error {
 	// Audio validation
 	if c.Audio.SampleRate != 16000 {
-		return fmt.Errorf("sample rate must be 16000 Hz for Whisper compatibility")
+		return fmt.Errorf("sample rate must be 16000 Hz for ASR compatibility")
 	}
 
 	// ASR validation
-	if c.ASR.ModelPath == "" {
-		return fmt.Errorf("asr.model_path must not be empty")
+	provider := strings.ToLower(strings.TrimSpace(c.ASR.Provider))
+	validProviders := map[string]bool{"": true, "local": true, "openai": true, "groq": true}
+	if !validProviders[provider] {
+		return fmt.Errorf("invalid asr.provider: %s (must be local, openai, or groq)", c.ASR.Provider)
+	}
+	if (provider == "" || provider == "local") && c.ASR.ModelPath == "" {
+		return fmt.Errorf("asr.model_path must not be empty for local ASR provider")
+	}
+	if c.ASR.TimeoutSeconds < 0 {
+		return fmt.Errorf("asr.timeout_seconds must be >= 0")
 	}
 
 	validLanguageModes := map[string]bool{"auto": true, "ru": true, "en": true}

@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
-
-	whisper "github.com/ggerganov/whisper.cpp/bindings/go"
 )
 
 // AudioWindow represents a chunk of audio to be transcribed.
@@ -25,28 +22,12 @@ type TranscriptionChunk struct {
 	Error    error
 }
 
-// ASRConfig defines configuration for the ASR service.
-type ASRConfig struct {
-	ModelPath    string
-	LanguageMode string // "auto", "ru", "en"
-	Threads      int    // Default: 4
-}
-
-// DefaultConfig returns a safe default configuration.
-func DefaultConfig() ASRConfig {
-	return ASRConfig{
-		ModelPath:    "models/ggml-base.bin",
-		LanguageMode: "auto",
-		Threads:      4,
-	}
-}
-
-// ASRService handles speech recognition using whisper.cpp.
-// It uses a single-worker pattern to safely manage the CGO context.
+// ASRService handles speech recognition through a pluggable provider.
+// It keeps the queue/worker behavior stable for the session orchestrator.
 type ASRService struct {
-	mu      sync.RWMutex
-	config  ASRConfig
-	context *whisper.Context
+	mu       sync.RWMutex
+	config   ASRConfig
+	provider Provider
 
 	// Worker channels
 	jobs    chan AudioWindow
@@ -59,28 +40,26 @@ type ASRService struct {
 }
 
 // NewASRService creates and initializes the ASR service.
-// It loads the model, which may take some time.
 func NewASRService(config ASRConfig) (*ASRService, error) {
-	//if err := ValidateModel(config.ModelPath); err != nil {
-	//	return nil, err
-	//}
-
-	// Load model and create context (Whisper_init does both in these bindings)
-	ctx := whisper.Whisper_init(config.ModelPath)
-	if ctx == nil {
-		return nil, fmt.Errorf("failed to initialize whisper context (check model path)")
+	config.Provider = normalizeProvider(config.Provider)
+	if config.SampleRate == 0 {
+		config.SampleRate = 16000
 	}
 
-	// Create service
+	provider, err := newProvider(config)
+	if err != nil {
+		return nil, err
+	}
+
 	serviceCtx, cancel := context.WithCancel(context.Background())
 
 	s := &ASRService{
-		config:  config,
-		context: ctx,
-		jobs:    make(chan AudioWindow, 3), // Buffered queue, size 3
-		results: make(chan TranscriptionChunk, 10),
-		ctx:     serviceCtx,
-		cancel:  cancel,
+		config:   config,
+		provider: provider,
+		jobs:     make(chan AudioWindow, 3),
+		results:  make(chan TranscriptionChunk, 10),
+		ctx:      serviceCtx,
+		cancel:   cancel,
 	}
 
 	return s, nil
@@ -97,8 +76,8 @@ func (s *ASRService) Stop() {
 	s.cancel()
 	s.wg.Wait()
 
-	if s.context != nil {
-		s.context.Whisper_free()
+	if closer, ok := s.provider.(closeProvider); ok {
+		_ = closer.Close()
 	}
 
 	close(s.jobs)
@@ -136,13 +115,8 @@ func (s *ASRService) Results() <-chan TranscriptionChunk {
 	return s.results
 }
 
-// workerLoop is the single point of interaction with the CGO context.
 func (s *ASRService) workerLoop() {
 	defer s.wg.Done()
-
-	// Lock OS thread for CGO safety
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	for {
 		select {
@@ -161,64 +135,31 @@ func (s *ASRService) processWindow(window AudioWindow) {
 
 	s.mu.RLock()
 	languageMode := s.config.LanguageMode
-	threads := s.config.Threads
+	timeout := s.config.Timeout
+	provider := s.provider
+	sampleRate := s.config.SampleRate
 	s.mu.RUnlock()
 
-	// Prepare params
-	params := s.context.Whisper_full_default_params(whisper.SAMPLING_GREEDY)
-	params.SetThreads(threads)
-	params.SetPrintProgress(false)
-	params.SetPrintRealtime(false)
-	params.SetPrintTimestamps(false)
-	params.SetTranslate(false) // Never translate unless explicitly requested (we don't have a flag for it yet)
-	params.SetNoContext(false) // Allow using previous context if available in the model
-
-	// Language handling
-	langID := -1 // Auto
-	if languageMode != "auto" {
-		langID = s.context.Whisper_lang_id(languageMode)
+	ctx := s.ctx
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
-	params.SetLanguage(langID)
+	defer cancel()
 
-	// Run inference
-	// Note: Whisper_full expects []float32.
-	if err := s.context.Whisper_full(params, window.Samples, nil, nil, nil); err != nil {
+	text, err := provider.Transcribe(ctx, window.Samples)
+	if err != nil {
 		s.results <- TranscriptionChunk{Error: fmt.Errorf("processing failed: %w", err)}
 		return
 	}
 
-	// Iterate segments
-	nSegments := s.context.Whisper_full_n_segments()
-
-	var fullText string
-	var start, end float32
-
-	for i := 0; i < nSegments; i++ {
-		text := s.context.Whisper_full_get_segment_text(i)
-		t0 := s.context.Whisper_full_get_segment_t0(i)
-		t1 := s.context.Whisper_full_get_segment_t1(i)
-
-		fullText += text
-
-		if i == 0 {
-			start = float32(t0) / 100.0 // Whisper time is 10ms units
-		}
-		end = float32(t1) / 100.0
-	}
-
-	detectedLang := languageMode
-	if languageMode == "auto" {
-		langID := s.context.Whisper_full_lang_id()
-		detectedLang = whisper.Whisper_lang_str(langID)
-	}
-
 	// Always emit a completion event so callers can track in-flight work,
-	// even if Whisper didn't produce any segments/text.
+	// even if the provider didn't produce any text.
 	s.results <- TranscriptionChunk{
-		Text:     fullText,
-		Language: detectedLang,
-		StartSec: start,
-		EndSec:   end,
+		Text:     text,
+		Language: languageMode,
+		StartSec: 0,
+		EndSec:   float32(len(window.Samples)) / float32(sampleRate),
 		Prob:     1.0,
 	}
 }
@@ -227,6 +168,9 @@ func (s *ASRService) processWindow(window AudioWindow) {
 func (s *ASRService) SetLanguageMode(lang string) {
 	s.mu.Lock()
 	s.config.LanguageMode = lang
+	if setter, ok := s.provider.(languageSetter); ok {
+		setter.SetLanguageMode(lang)
+	}
 	s.mu.Unlock()
 }
 

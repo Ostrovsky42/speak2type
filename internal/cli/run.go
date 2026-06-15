@@ -36,7 +36,14 @@ func RunSession(args []string) int {
 	deviceIndex := fs.Int("device-index", -1, "capture device index")
 	lang := fs.String("lang", "ru", "ASR language")
 	modelPath := fs.String("model", "models/silero_vad.onnx", "path to silero_vad.onnx")
-	asrModelPath := fs.String("asr-model", "", "path to Whisper ggml model (overrides config asr.model_path)")
+	asrModelPath := fs.String("asr-model", "", "path to local Whisper ggml model (overrides config asr.model_path)")
+	asrProvider := fs.String("asr-provider", "", "ASR provider: local, openai, or groq (overrides config asr.provider)")
+	asrCloudModel := fs.String("asr-cloud-model", "", "cloud ASR model ID (overrides config asr.model)")
+	asrEndpoint := fs.String("asr-endpoint", "", "OpenAI-compatible transcription endpoint override")
+	asrAPIKeyEnv := fs.String("asr-api-key-env", "", "environment variable containing cloud ASR API key")
+	asrPrompt := fs.String("asr-prompt", "", "optional ASR context prompt for cloud providers")
+	asrResponseFormat := fs.String("asr-response-format", "", "cloud ASR response format: json or text")
+	asrTimeout := fs.Duration("asr-timeout", 0, "cloud ASR request timeout (e.g. 10s, overrides config asr.timeout_seconds)")
 	singleLogit := fs.Bool("single-logit", false, "treat VAD output as logit")
 	forceWayland := fs.Bool("force-wayland-inject", false, "allow text injection on Wayland (risky)")
 	noRestore := fs.Bool("no-restore", false, "don't restore clipboard after paste")
@@ -236,8 +243,15 @@ func RunSession(args []string) int {
 	gate := vad.NewGate(vad.DefaultGateConfig())
 
 	// 3. Init ASR
-	fmt.Println("Initializing ASR...")
 	asrConfig := asr.DefaultConfig()
+	asrConfig.Provider = strings.TrimSpace(cfg.ASR.Provider)
+	if asrConfig.Provider == "" {
+		asrConfig.Provider = asr.DefaultConfig().Provider
+	}
+	if strings.TrimSpace(*asrProvider) != "" {
+		asrConfig.Provider = strings.TrimSpace(*asrProvider)
+	}
+
 	asrConfig.ModelPath = strings.TrimSpace(cfg.ASR.ModelPath)
 	if asrConfig.ModelPath == "" {
 		asrConfig.ModelPath = asr.DefaultConfig().ModelPath
@@ -245,6 +259,38 @@ func RunSession(args []string) int {
 	if strings.TrimSpace(*asrModelPath) != "" {
 		asrConfig.ModelPath = strings.TrimSpace(*asrModelPath)
 	}
+
+	asrConfig.Model = strings.TrimSpace(cfg.ASR.Model)
+	if strings.TrimSpace(*asrCloudModel) != "" {
+		asrConfig.Model = strings.TrimSpace(*asrCloudModel)
+	}
+	asrConfig.Endpoint = strings.TrimSpace(cfg.ASR.Endpoint)
+	if strings.TrimSpace(*asrEndpoint) != "" {
+		asrConfig.Endpoint = strings.TrimSpace(*asrEndpoint)
+	}
+	asrConfig.APIKeyEnv = strings.TrimSpace(cfg.ASR.APIKeyEnv)
+	if strings.TrimSpace(*asrAPIKeyEnv) != "" {
+		asrConfig.APIKeyEnv = strings.TrimSpace(*asrAPIKeyEnv)
+	}
+	asrConfig.Prompt = strings.TrimSpace(cfg.ASR.Prompt)
+	if strings.TrimSpace(*asrPrompt) != "" {
+		asrConfig.Prompt = strings.TrimSpace(*asrPrompt)
+	}
+	asrConfig.ResponseFormat = strings.TrimSpace(cfg.ASR.ResponseFormat)
+	if asrConfig.ResponseFormat == "" {
+		asrConfig.ResponseFormat = asr.DefaultConfig().ResponseFormat
+	}
+	if strings.TrimSpace(*asrResponseFormat) != "" {
+		asrConfig.ResponseFormat = strings.TrimSpace(*asrResponseFormat)
+	}
+	if cfg.ASR.TimeoutSeconds > 0 {
+		asrConfig.Timeout = time.Duration(cfg.ASR.TimeoutSeconds) * time.Second
+	}
+	if *asrTimeout > 0 {
+		asrConfig.Timeout = *asrTimeout
+	}
+	asrConfig.SampleRate = int(audioConfig.SampleRate)
+
 	effectiveLang := strings.TrimSpace(*lang)
 	if !langOverride && cfg.ASR.LanguageMode != "" {
 		effectiveLang = cfg.ASR.LanguageMode
@@ -254,6 +300,7 @@ func RunSession(args []string) int {
 	}
 	asrConfig.LanguageMode = effectiveLang
 
+	fmt.Printf("Initializing ASR (%s)...\n", asrConfig.Provider)
 	asrSvc, err := asr.NewASRService(asrConfig)
 	if err != nil {
 		fmt.Printf("❌ ASR Error: %v\n", err)
@@ -263,7 +310,7 @@ func RunSession(args []string) int {
 			State:     event.StateError,
 			ErrorCode: "asr_init_failed",
 			Message:   err.Error(),
-			Hint:      "check ASR model path and CPU compatibility",
+			Hint:      "check ASR provider settings, model path, API key, and CPU/network availability",
 		})
 		return 1
 	}

@@ -8,7 +8,7 @@ Designed for Linux (X11) with a macOS nohook build path.
 ## Features
 
 - **Robust VAD**: Silero VAD v5 (ONNX) with v4 fallback and state preservation.
-- **Fast ASR**: Whisper.cpp via CGO bindings.
+- **Hybrid ASR**: Local whisper.cpp by default, with optional OpenAI and Groq cloud transcription providers.
 - **Text Stability**: LCS-based merging for flicker-free streaming.
 - **Reliable Injection**: Clipboard-based text insertion (works on all keyboard layouts).
 - **Diagnostics**: Built-in `doctor` command for environment verification.
@@ -33,7 +33,7 @@ Model files and native libraries are intentionally not committed. After cloning,
 make deps
 ```
 
-This downloads checksum-pinned Silero VAD, Whisper GGML, ONNX Runtime, and whisper.cpp artifacts. `speak2type run` expects the default VAD model at `models/silero_vad.onnx`; if it is missing, run `make deps`. Linux and macOS dependency downloads are supported; macOS currently builds the nohook path in CI.
+This downloads checksum-pinned Silero VAD, Whisper GGML, ONNX Runtime, and whisper.cpp artifacts for local ASR. `speak2type run` expects the default VAD model at `models/silero_vad.onnx`; if it is missing, run `make deps`. Cloud ASR providers still use local VAD/audio capture, but do not need the local Whisper GGML model at runtime. Linux and macOS dependency downloads are supported; macOS currently builds the nohook path in CI.
 
 ## ⚡ Quick Start
 
@@ -70,9 +70,15 @@ Binaries will be placed in `./bin/`.
 
 ### 3. Usage
 
-**✨ Blessed Path (One-line Start):**
+**✨ Blessed Path (Local ASR):**
 ```bash
 ./bin/speak2type run -device-index 0 -lang ru
+```
+
+**Cloud ASR Providers:**
+```bash
+OPENAI_API_KEY=... ./bin/speak2type run --asr-provider openai --asr-cloud-model gpt-4o-mini-transcribe
+GROQ_API_KEY=... ./bin/speak2type run --asr-provider groq --asr-cloud-model whisper-large-v3-turbo
 ```
 
 **Verify System:**
@@ -119,7 +125,7 @@ Binaries will be placed in `./bin/`.
 | **Infrastructure** | ✅ Stable | `Makefile`, `cmd/doctor`, Pre-flight checks |
 | **AudioService** | ✅ Stable | Zero-alloc ring buffer, PortAudio |
 | **VADService** | ✅ Stable | Silero VAD v5 default with v4 fallback; v6 validation pending |
-| **ASRService** | ✅ Stable | Whisper.cpp bindings, streaming |
+| **ASRService** | ✅ Stable | Provider interface: local whisper.cpp, OpenAI API, Groq API |
 | **Injector** | ✅ Stable | Clipboard-based (`Ctrl+V`), X11 optimized |
 
 ## 🛠️ Troubleshooting
@@ -128,6 +134,11 @@ Binaries will be placed in `./bin/`.
 - **Cause**: Linux keyboard layouts handle direct key-codes poorly (e.g. typing Russian on English layout).
 - **Fix**: Speak2Type uses **Clipboard Paste** by default. Ensure `xclip` is installed.
 - **Wayland**: If `make doctor` shows "Session Type: wayland", injection is **unstable**. Switch to X11.
+
+### Cloud ASR Fails
+- **OpenAI**: set `OPENAI_API_KEY` or override with `--asr-api-key-env`.
+- **Groq**: set `GROQ_API_KEY` or override with `--asr-api-key-env`.
+- Use `--asr-timeout 10s` to tune network timeout for short command dictation.
 
 ### `libonnxruntime.so` not found
 - Run `make doctor`. It will tell you exactly where it expects the library.
