@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -131,4 +133,84 @@ func RemovePID() {
 		lockFile.Close()
 		os.Remove(getLockPath())
 	}
+}
+
+// IsDaemonRunning returns true if the daemon process is active and running.
+func IsDaemonRunning() bool {
+	pidPath := getPIDPath()
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return false
+	}
+
+	// Double check the process actually exists
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	// Signal 0 checks process existence / permissions
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+
+	// Check cmdline to avoid stale PID conflicts
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(cmdline), "speak2type")
+}
+
+// StartDaemonIfNeeded checks if the daemon is running and, if not, starts it.
+func StartDaemonIfNeeded() error {
+	if IsDaemonRunning() {
+		return nil
+	}
+
+	// Find the path to the current executable
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	logPath := GetLogPath()
+
+	cmd := exec.Command(execPath, "run", "--daemon")
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, "SPEAK2TYPE_DAEMON=1")
+
+	// Create directories for log file if they don't exist
+	logDir := filepath.Dir(logPath)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		defer logFile.Close()
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to spawn daemon: %w", err)
+	}
+
+	// Wait up to 3 seconds for the daemon socket to be initialized
+	socketPath := GetSocketPath()
+	for i := 0; i < 30; i++ {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return nil
 }

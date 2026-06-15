@@ -1,16 +1,10 @@
-// cmd/mic-test demonstrates basic audio capture functionality.
-// This is a development tool to verify AudioService works correctly.
-//
-// Usage:
-//
-//	go run cmd/mic-test/main.go
-//
-// Press Ctrl+C to stop recording.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,6 +18,10 @@ func main() {
 	fmt.Println("=====================")
 	fmt.Println()
 
+	// Parse flags
+	deviceIndex := flag.Int("device-index", -1, "capture device index to test (-1 = system default)")
+	flag.Parse()
+
 	// List available devices
 	fmt.Println("📋 Available audio devices:")
 	devices, err := audio.ListDevices(context.Background())
@@ -33,20 +31,39 @@ func main() {
 	}
 
 	for _, dev := range devices {
-		fmt.Printf("  %s\n", dev.String())
+		marker := "   "
+		if dev.IsDefault {
+			marker = " 👉"
+		}
+		fmt.Printf("%s [%d] %s\n", marker, dev.Index, dev.Name)
 	}
 	fmt.Println()
 
-	// Create audio service with default config
-	config := audio.DefaultConfig()
-	fmt.Printf("🔧 Configuration:\n")
-	fmt.Printf("  Sample Rate: %d Hz\n", config.SampleRate)
-	fmt.Printf("  Channels: %d (mono)\n", config.Channels)
-	fmt.Printf("  Buffer: %d ms\n", config.BufferMS)
-	fmt.Printf("  Ring Buffer: %.1f seconds\n", config.RingBufferDuration)
-	fmt.Println()
+	// Create audio service config
+	audioConfig := audio.DefaultConfig()
+	if *deviceIndex >= 0 && *deviceIndex < len(devices) {
+		audioConfig.DeviceID = &devices[*deviceIndex].ID
+		fmt.Printf("🔧 Using selected device: %s\n", devices[*deviceIndex].String())
+	} else {
+		// Resolve system default device explicitly
+		var defaultDev *audio.DeviceInfo
+		for i := range devices {
+			if devices[i].IsDefault {
+				defaultDev = &devices[i]
+				break
+			}
+		}
+		if defaultDev != nil {
+			audioConfig.DeviceID = &defaultDev.ID
+			fmt.Printf("🔧 Using system default device: %s\n", defaultDev.String())
+		} else {
+			fmt.Println("🔧 Using miniaudio default device")
+		}
+	}
 
-	service, err := audio.NewAudioService(config)
+	fmt.Printf("  Sample Rate: %d Hz | Channels: %d (mono)\n\n", audioConfig.SampleRate, audioConfig.Channels)
+
+	service, err := audio.NewAudioService(audioConfig)
 	if err != nil {
 		fmt.Printf("❌ Error creating audio service: %v\n", err)
 		os.Exit(1)
@@ -64,7 +81,7 @@ func main() {
 
 	fmt.Println("✅ Recording started!")
 	fmt.Println()
-	fmt.Println("🎙️  Speak into your microphone...")
+	fmt.Println("🎙️  Speak into your microphone to test volume level...")
 	fmt.Println("   Press Ctrl+C to stop")
 	fmt.Println()
 
@@ -72,8 +89,8 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Statistics reporting ticker
-	ticker := time.NewTicker(2 * time.Second)
+	// Volume rendering ticker (runs 10 times a second for smooth live feedback)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	// Main loop
@@ -85,17 +102,37 @@ func main() {
 
 		case <-ticker.C:
 			stats := service.GetStats()
-			printStats(stats)
+
+			// Get recent 100ms of audio samples to calculate peak
+			samples := service.Snapshot(0.1)
+
+			peak := 0.0
+			for _, s := range samples {
+				abs := math.Abs(float64(s))
+				if abs > peak {
+					peak = abs
+				}
+			}
+
+			// Generate simple text VU meter bar (20 chars max)
+			barLength := int(peak * 20.0)
+			if barLength > 20 {
+				barLength = 20
+			}
+			bar := ""
+			for i := 0; i < barLength; i++ {
+				bar += "="
+			}
+			for len(bar) < 20 {
+				bar += " "
+			}
+
+			fmt.Printf("\r📊 Stats: Uptime=%s | Peak Volume: [%s] %.4f | Buffer=%.1f%%  ",
+				stats.Uptime.Round(time.Second),
+				bar,
+				peak,
+				stats.BufferStats.Utilization*100,
+			)
 		}
 	}
-}
-
-func printStats(stats audio.AudioServiceStats) {
-	fmt.Printf("\r📊 Stats: Uptime=%s | Callbacks=%d | Frames=%d | Dropped=%.3f%% | Buffer=%.1f%%  ",
-		stats.Uptime.Round(time.Second),
-		stats.CallbackHits,
-		stats.TotalFrames,
-		stats.DropRate,
-		stats.BufferStats.Utilization*100,
-	)
 }

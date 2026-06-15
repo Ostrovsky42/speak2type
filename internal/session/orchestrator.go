@@ -143,6 +143,12 @@ func (o *Orchestrator) SetProfile(t ProfileType) {
 	}
 }
 
+func (o *Orchestrator) Profile() ProfileType {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.profile.Name
+}
+
 // SetLanguage updates the current ASR language and broadcasts state.
 func (o *Orchestrator) SetLanguage(lang string) {
 	o.mu.Lock()
@@ -347,6 +353,8 @@ func (o *Orchestrator) loop() {
 				if committed != "" || tentative != "" {
 					o.emitFullText(committed, tentative)
 				}
+			} else {
+				fmt.Println(" [Orch] ASR result: (no speech recognized)")
 			}
 
 			shouldFinalize := false
@@ -567,11 +575,19 @@ func (o *Orchestrator) emitTranscriptionFinished() {
 	textLen := o.committedLen
 	o.mu.Unlock()
 
+	msg := "ASR completed"
+	if textLen == 0 {
+		msg = "ASR completed: no speech recognized (check microphone and volume)"
+	} else {
+		msg = fmt.Sprintf("ASR completed: recognized %d characters", textLen)
+	}
+
 	o.publishEvent(event.Event{
 		Type:    event.TypeTranscriptionFinished,
 		Level:   event.LevelInfo,
 		State:   event.StateTranscribing,
 		TextLen: textLen,
+		Message: msg,
 	})
 }
 

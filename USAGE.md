@@ -43,6 +43,7 @@ Optimized for fast system control and short snippets.
 
 | Command | Description |
 | :--- | :--- |
+| `speak2type devices` | List available audio input devices (microphones). |
 | `speak2type run` | Start in foreground (interactive). |
 | `speak2type run --daemon` | Start as background service. |
 | `speak2type stop` | Terminate the running daemon safely. |

@@ -7,6 +7,11 @@ import (
 	"os"
 )
 
+func handleDefaultCommand() {
+	printUsage()
+	os.Exit(0)
+}
+
 func handleTrayCommand() {
 	fmt.Println("❌ Tray support is not compiled into this binary.")
 	fmt.Println("💡 To enable tray, install dependencies and build with '-tags tray':")

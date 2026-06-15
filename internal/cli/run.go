@@ -98,6 +98,9 @@ func RunSession(args []string) int {
 		cfg = config.Default()
 	}
 
+	// Override VAD gate profiles based on config loaded
+	session.OverrideProfiles(cfg.VAD.Threshold, cfg.VAD.MinSpeechDurationMS, cfg.VAD.MinSilenceDurationMS)
+
 	var cfgValue atomic.Value
 	cfgValue.Store(cfg)
 
@@ -168,6 +171,10 @@ func RunSession(args []string) int {
 		}
 		cfgValue.Store(newCfg)
 		cfg = newCfg
+
+		// Re-override VAD profiles based on reloaded config
+		session.OverrideProfiles(newCfg.VAD.Threshold, newCfg.VAD.MinSpeechDurationMS, newCfg.VAD.MinSilenceDurationMS)
+
 		if applyConfig != nil {
 			applyConfig(newCfg)
 		}
@@ -193,9 +200,32 @@ func RunSession(args []string) int {
 	fmt.Println("Initializing Audio...")
 	audioConfig := audio.DefaultConfig()
 	devices, _ := audio.ListDevices(context.Background())
-	if *deviceIndex >= 0 && *deviceIndex < len(devices) {
-		audioConfig.DeviceID = &devices[*deviceIndex].ID
-		fmt.Printf("  Using device: %s\n", devices[*deviceIndex].String())
+
+	chosenIndex := -1
+	if *deviceIndex >= 0 {
+		chosenIndex = *deviceIndex
+	} else if cfg.Audio.DeviceID != nil {
+		chosenIndex = *cfg.Audio.DeviceID
+	}
+
+	if chosenIndex >= 0 && chosenIndex < len(devices) {
+		audioConfig.DeviceID = &devices[chosenIndex].ID
+		fmt.Printf("  Using device: %s\n", devices[chosenIndex].String())
+	} else {
+		// Fallback to system default microphone device
+		var defaultDev *audio.DeviceInfo
+		for i := range devices {
+			if devices[i].IsDefault {
+				defaultDev = &devices[i]
+				break
+			}
+		}
+		if defaultDev != nil {
+			audioConfig.DeviceID = &defaultDev.ID
+			fmt.Printf("  Using default device: %s\n", defaultDev.String())
+		} else {
+			fmt.Println("  Using system default device (no explicit default marked)")
+		}
 	}
 
 	audioSvc, err := audio.NewAudioService(audioConfig)
@@ -218,6 +248,22 @@ func RunSession(args []string) int {
 	vadConfig := vad.DefaultConfig()
 	vadConfig.ModelPath = *modelPath
 	vadConfig.SingleLogit = *singleLogit
+	if cfg.VAD.Threshold > 0 {
+		vadConfig.Threshold = cfg.VAD.Threshold
+	}
+
+	// Enable VAD debug prints if log level is debug
+	currentLogLevel := logging.LevelInfo
+	if logLevelOverride != "" {
+		currentLogLevel = logging.Parse(logLevelOverride)
+	} else if cfg != nil {
+		currentLogLevel = logging.Parse(cfg.Logging.Level)
+	}
+	if currentLogLevel == logging.LevelDebug {
+		vadConfig.DebugRMS = true
+		vadConfig.DebugOut = true
+	}
+
 	vadSvc, err := vad.NewVADService(vadConfig)
 	if err != nil {
 		fmt.Printf("❌ VAD Error: %v\n", err)
@@ -233,7 +279,7 @@ func RunSession(args []string) int {
 	}
 	defer vadSvc.Close()
 
-	gate := vad.NewGate(vad.DefaultGateConfig())
+	gate := vad.NewGate(session.GetProfile(session.ProfileDictation).VAD)
 
 	// 3. Init ASR
 	fmt.Println("Initializing ASR...")
@@ -352,6 +398,8 @@ func RunSession(args []string) int {
 			asrSvc.SetLanguageMode(newLang)
 			orch.SetLanguage(newLang)
 		}
+		// Re-apply the current profile to update the VAD Gate configuration
+		orch.SetProfile(orch.Profile())
 	}
 
 	// 5. IPC Server
@@ -568,6 +616,7 @@ func RunSession(args []string) int {
 }
 
 func startLogSubscriber(bus *event.Bus, levelFn func() logging.Level) {
+	isDaemon := os.Getenv("SPEAK2TYPE_DAEMON") == "1"
 	ch, _ := bus.Subscribe("log", 200)
 	go func() {
 		for evt := range ch {
@@ -576,7 +625,7 @@ func startLogSubscriber(bus *event.Bus, levelFn func() logging.Level) {
 			if !logging.Allowed(threshold, msgLevel) {
 				continue
 			}
-			log.Println(formatEvent(evt))
+			log.Println(formatEvent(evt, isDaemon))
 		}
 	}()
 }
@@ -661,7 +710,49 @@ func formatHotkey(value string) string {
 	return strings.ToUpper(value)
 }
 
-func formatEvent(evt event.Event) string {
+func formatEvent(evt event.Event, isDaemon bool) string {
+	if !isDaemon {
+		// Human-readable format for interactive console
+		timestamp := evt.Time.Format("15:04:05.000")
+		var emoji string
+		switch evt.Type {
+		case event.TypeAppStarted:
+			emoji = "🚀"
+		case event.TypeHotkeyRegistered:
+			emoji = "⌨️"
+		case event.TypeRecordingStarted:
+			emoji = "🎙️"
+		case event.TypeRecordingStopped:
+			emoji = "⏹️"
+		case event.TypeTranscriptionStarted:
+			emoji = "⏳"
+		case event.TypeTranscriptionFinished:
+			emoji = "📝"
+		case event.TypeInjectionStarted:
+			emoji = "📋"
+		case event.TypeInjectionFinished:
+			emoji = "✅"
+		case event.TypeDone:
+			emoji = "🏁"
+		case event.TypeError:
+			emoji = "❌"
+		default:
+			emoji = "🔹"
+		}
+
+		parts := []string{
+			fmt.Sprintf("[%s] %s %-22s | State: %-12s", timestamp, emoji, strings.ToUpper(string(evt.Type)), evt.State),
+		}
+		if evt.Message != "" {
+			parts = append(parts, fmt.Sprintf("msg=%q", evt.Message))
+		}
+		if evt.Hint != "" {
+			parts = append(parts, fmt.Sprintf("hint=%q", evt.Hint))
+		}
+		return strings.Join(parts, " ")
+	}
+
+	// Structured logfmt for daemon log files
 	level := evt.Level
 	if level == "" {
 		level = event.LevelInfo

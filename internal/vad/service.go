@@ -31,6 +31,9 @@ type VADService struct {
 
 	// Output Probability
 	tOutput *onnxruntime.Tensor[float32]
+
+	// Rolling tail buffer for v5 VAD context
+	tailBuffer []float32
 }
 
 // VADConfig defines VAD model parameters
@@ -114,7 +117,10 @@ func NewVADService(config VADConfig) (*VADService, error) {
 
 func (v *VADService) initCommonTensors() error {
 	var err error
-	v.tInput, err = onnxruntime.NewTensor(onnxruntime.NewShape(1, int64(v.config.ChunkSize)), make([]float32, v.config.ChunkSize))
+	contextSize := v.config.ChunkSize / 8
+	inputSize := v.config.ChunkSize + contextSize
+
+	v.tInput, err = onnxruntime.NewTensor(onnxruntime.NewShape(1, int64(inputSize)), make([]float32, inputSize))
 	if err != nil {
 		return err
 	}
@@ -222,15 +228,30 @@ func (v *VADService) Process(chunk []float32) (float32, error) {
 		}
 	}
 
+	// Prepare input data (tail context + new chunk)
+	contextSize := v.config.ChunkSize / 8
+	if len(v.tailBuffer) != contextSize {
+		v.tailBuffer = make([]float32, contextSize)
+	}
+
 	input := v.tInput.GetData()
 	gain := v.config.InputGain
 	if v.config.NormalizeRMS && rms > 0 {
 		gain *= v.config.TargetRMS / rms
 	}
 
-	for i := range chunk {
-		input[i] = chunk[i] * gain
+	// Copy tail context to the beginning of the tensor input
+	for i := 0; i < contextSize; i++ {
+		input[i] = v.tailBuffer[i] * gain
 	}
+
+	// Copy current chunk to the rest of the tensor input
+	for i := 0; i < len(chunk); i++ {
+		input[contextSize+i] = chunk[i] * gain
+	}
+
+	// Update tail context for the next run (last contextSize samples of the current chunk)
+	copy(v.tailBuffer, chunk[len(chunk)-contextSize:])
 
 	if err := v.session.Run(); err != nil {
 		return 0, err
@@ -276,6 +297,11 @@ func (v *VADService) ResetState() error {
 		for i := range c {
 			c[i] = 0
 		}
+	}
+
+	// Reset tail buffer
+	for i := range v.tailBuffer {
+		v.tailBuffer[i] = 0
 	}
 	return nil
 }

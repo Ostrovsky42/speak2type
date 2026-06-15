@@ -10,8 +10,8 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+		handleDefaultCommand()
+		return
 	}
 
 	command := os.Args[1]
@@ -23,6 +23,8 @@ func main() {
 	args := os.Args[2:]
 
 	switch command {
+	case "devices", "list-devices":
+		os.Exit(cli.RunDevices())
 	case "doctor":
 		// Doctor doesn't take args currently, but good to be consistent
 		os.Exit(cli.RunDoctor())
@@ -45,7 +47,7 @@ func main() {
 	case "version":
 		fmt.Printf("Speak2Type Voice Input v%s\n", version.Version)
 	default:
-		fmt.Println("Usage: speak2type [run|doctor|inject-test|stop|status|install-service|enable|disable|version]")
+		fmt.Println("Usage: speak2type [run|devices|doctor|inject-test|stop|status|install-service|enable|disable|version]")
 		os.Exit(1)
 	}
 }
@@ -54,6 +56,7 @@ func printUsage() {
 	fmt.Println("Usage: speak2type <command> [args]")
 	fmt.Println("       speak2type --version")
 	fmt.Println("Commands:")
+	fmt.Println("  devices      List available audio input devices (microphones)")
 	fmt.Println("  doctor       Check system environment")
 	fmt.Println("  run          Start voice session")
 	fmt.Println("  inject-test  Test text injection")

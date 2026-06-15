@@ -28,6 +28,9 @@ type AudioService struct {
 	// Ring buffer for audio samples
 	ringBuffer *RingBuffer
 
+	// Scratch buffer for zero-allocation stereo downmixing
+	scratchBuf []float32
+
 	// State management
 	isRecording  atomic.Bool
 	mu           sync.Mutex
@@ -85,6 +88,7 @@ func NewAudioService(config AudioServiceConfig) (*AudioService, error) {
 		ctx:        ctx,
 		config:     config,
 		ringBuffer: ringBuffer,
+		scratchBuf: make([]float32, 4096), // Generous pre-allocation for typical 480-sample frame count
 	}
 
 	return service, nil
@@ -195,9 +199,36 @@ func (a *AudioService) onAudioCallback(pInputSamples []byte, frameCount uint32, 
 	a.callbackHits.Add(1)
 	a.totalFrames.Add(uint64(frameCount))
 
-	// Convert []byte to []float32 using unsafe pointer (zero-copy view)
-	// This is safe because malgo guarantees the lifetime of pInputSamples
-	samples := unsafe.Slice((*float32)(unsafe.Pointer(&pInputSamples[0])), frameCount)
+	if len(pInputSamples) < int(frameCount)*int(sizeInBytes) {
+		return
+	}
+
+	rawSampleCount := uint32(len(pInputSamples)) / sizeInBytes
+	rawSamples := unsafe.Slice((*float32)(unsafe.Pointer(&pInputSamples[0])), rawSampleCount)
+
+	var samples []float32
+	if rawSampleCount > frameCount {
+		channels := int(rawSampleCount / frameCount)
+		if channels > 1 {
+			if int(frameCount) <= len(a.scratchBuf) {
+				samples = a.scratchBuf[:frameCount]
+			} else {
+				// Fallback to heap allocation if frameCount is unexpectedly large
+				samples = make([]float32, frameCount)
+			}
+			for i := 0; i < int(frameCount); i++ {
+				sum := float32(0)
+				for c := 0; c < channels; c++ {
+					sum += rawSamples[i*channels+c]
+				}
+				samples[i] = sum / float32(channels)
+			}
+		} else {
+			samples = rawSamples[:frameCount]
+		}
+	} else {
+		samples = rawSamples[:frameCount]
+	}
 
 	// Write to ring buffer (mutex-protected, but fast)
 	written := a.ringBuffer.Write(samples)
