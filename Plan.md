@@ -1,310 +1,325 @@
-Speak2Type Implementation Task List
-Project Goal
-Port Python-based Speak2Type voice input tool to Go with mandatory Russian language support, production-ready architecture, and real-time performance.
+# Speak2Type Plan and Roadmap
 
-Phase 1: Audio Foundation ✅ COMPLETE
-Core Components
+Last updated: 2026-06-15
 
-internal/audio/ringbuffer.go
-— Circular buffer implementation
-Zero-allocation Write() method
-Thread-safe concurrent access (mutex-protected)
-Atomic position tracking
-Overflow handling
-Statistics collection
+## Status
 
-internal/audio/ringbuffer_test.go
-— Comprehensive test suite
-Basic write/read test
-Wraparound behavior test
-Concurrent read/write test (race detector clean)
-Zero-allocation verification test
-Snapshot duration test
-Empty buffer edge case test
-Reset functionality test
+The original implementation plan is complete, and the project has moved beyond the initial Python-to-Go port scope.
 
-internal/audio/service.go
-— Audio capture service
-malgo (miniaudio) integration
-Hardware resampling to 16kHz
-Zero-copy callback (unsafe.Slice)
-Device enumeration
-Performance metrics
+Current state:
 
+- Core dictation pipeline is implemented: audio capture -> VAD -> ASR -> text stabilization -> focused paste injection.
+- Linux and macOS are documented runtime targets.
+- Local and cloud ASR providers are supported.
+- Tray UX covers provider/key selection, hot reload, daemon/tray lifecycle, language/profile selection, logs, doctor, and restart.
+- Release/install/user documentation has been refreshed for Linux and macOS.
 
-pkg/config/config.go
-— Configuration management
-JSON persistence
+## Completed Original Phases
 
+### Phase 1: Audio Foundation
 
-Platform-specific paths
-Validation
-Russian language support in config
+Completed.
 
-cmd/mic-test/main.go
-— Demo application
-Device listing
-Audio capture verification
-Real-time statistics display
-Signal handling (Ctrl+C)
-Documentation
+Implemented:
 
-README.md
-— Project overview and quick start
+- `internal/audio` capture service and ring buffer.
+- Device enumeration and audio stats.
+- Config persistence in `pkg/config`.
+- `cmd/mic-test` verification tool.
+- Documentation and phase notes.
 
-docs/phase1_notes.md
-— Implementation notes
+### Phase 2: Voice Activity Detection
 
-walkthrough.md
-— Phase 1 walkthrough
-Verification
-All tests passing (7/7)
-Race detector clean
-Binary builds successfully (3.9 MB)
-Demo runs without errors
-0% dropped frames verified
-Status: ✅ COMPLETE (2025-11-29)
+Completed.
 
-Phase 2: Voice Activity Detection ✅ COMPLETE
-Core Components
+Implemented:
 
-internal/vad/service.go
-— VAD service implementation
-ONNX Runtime Go bindings setup
-Embed silero_vad.onnx model (~5 MB)
-LSTM state management
-Chunk processing (512/1024/1536 samples)
-Probability output (0.0-1.0)
+- Silero VAD ONNX runtime path.
+- VAD gate/hysteresis.
+- VAD state preservation.
+- Primary Silero VAD v5 model path with v4 fallback noted in architecture docs.
+- VAD tests and diagnostics.
 
-internal/vad/gate.go
-— Hysteresis gate logic
-State machine (Silence ↔ Speech)
-Configurable thresholds (start: 0.5, end: 0.3)
-Minimum duration enforcement (300ms speech, 500ms silence)
-Event emission (speech_start, speech_end)
+### Phase 3: Speech Recognition
 
-internal/vad/service_test.go
-— VAD tests
-Accuracy test on clean speech
-Keyboard noise rejection test
-Hysteresis behavior test
-Latency benchmark (<30ms target)
-Integration
+Completed and extended.
 
-cmd/vad-test/main.go
-— VAD demo
-AudioService → VADService pipeline
-Visual speech/silence indicator
-Real-time probability display
-Test on recorded samples
-Dependencies
-go get github.com/yalue/onnxruntime_go
-Download silero_vad.onnx from Silero repo
-Status: ✅ COMPLETE (2025-11-29)
+Implemented:
 
-Phase 3: Speech Recognition ✅ COMPLETE
-Core Components
+- ASR service with worker queue and drop-oldest behavior.
+- Local `whisper.cpp` provider.
+- Provider interface in `internal/asr`.
+- OpenAI and Groq cloud transcription providers.
+- Provider-specific API keys:
+  - `asr.openai_api_key`
+  - `asr.groq_api_key`
+  - legacy `asr.api_key` fallback retained.
+- Runtime ASR provider hot reload through `reload_config` without daemon restart.
 
-internal/asr/service.go
-— Whisper.cpp integration
-Architecture: Single-worker goroutine pattern
-Data Types:
-AudioWindow
-(input),
-TranscriptionChunk
-(output)
-Queue: Buffered channel (size 3) with drop-oldest strategy
-CGO: Safe integration with official bindings (manual build)
-Config: language_mode (auto/ru/en) support
+### Phase 4: Text Stabilization
 
-internal/asr/model.go
-— Model management
-Model loader (ggml-base.bin)
-Validation (existence, size)
+Completed.
 
-internal/asr/service_test.go
-— ASR tests
-Integration test (Silence/English)
-Queue overflow test
-CGO compilation verification
-Russian Language Tests
+Implemented:
 
-cmd/asr-test/main.go
-— ASR demo
-AudioService → VAD → ASR pipeline
-7s sliding window logic
-Real-time transcription output
-Status: ✅ COMPLETE (2025-11-29)
+- LCS-based text merger.
+- Stable vs tentative text handling.
+- Final flush behavior.
+- Console display of recognized text.
 
-Phase 4: Text Stabilization 🚧 NEXT
-Core Components
-internal/merger/service.go — Text merger service
-Stability-based algorithm
-LCS (Longest Common Subsequence) implementation
-Committed vs Tentative buffers
-Stability scoring per word
-Anti-hallucination protection
-internal/merger/lcs.go — LCS algorithm
-Dynamic programming implementation
-Overlap detection
-Token-based matching
-internal/merger/service_test.go — Merger tests
-No word duplication test
-Idempotency test
-Russian phrase merging test
-English phrase merging test
-Property-based tests
-Test Cases
-Overlapping segments without gaps
-Overlapping segments with model corrections
-No overlap (fallback behavior)
-Long continuous speech (60+ seconds)
-Estimated Effort: 3-4 days
+### Phase 5: Session Management
 
-Phase 5: Session Management 📋 PLANNED
-Core Components
-internal/session/orchestrator.go — State machine
-FSM implementation (Idle → Listening → Processing → Stabilizing)
-Service coordination (Audio, VAD, ASR, Merger)
-Mode support (Quick Note, Continuous Dictation)
-Hotkey handling
-Error recovery
-internal/session/modes.go — Session modes
-Quick Note implementation
-Continuous Dictation implementation
-Mode switching logic
-internal/session/orchestrator_test.go — FSM tests
-State transition tests
-Error handling tests
-Mode switching tests
-Estimated Effort: 3-4 days
+Completed and extended.
 
-Phase 6: Input Injection & UI 📋 PLANNED
-Input Injection
-internal/injection/service.go — RobotGo integration
-Main OS thread affinity (runtime.LockOSThread)
-Command channel pattern
-TypeText mode
-PasteClipboard mode
-Platform-specific paste (Ctrl+V / Cmd+V)
-internal/injection/service_test.go — Injection tests
-Basic text injection test
-Clipboard preservation test
-Platform detection test
-User Interface
-System tray integration
-Icon display
-Context menu
-Status updates
-Floating overlay (optional)
-Fyne or minimal custom UI
-Tentative text display
-Position configuration
-Settings UI (optional)
-Config editing
-Device selection
-Hotkey customization
-Estimated Effort: 4-5 days
+Implemented:
 
-Phase 7: Production Ready 📋 PLANNED
-Optimization
-CPU profiling (pprof)
-Identify hot paths
-Optimize allocations
-Reduce GC pressure
-Memory profiling
-Detect leaks
-Optimize buffer sizes
-Verify target <500 MB
-Cross-Platform Builds
-Linux (amd64, arm64)
-Static linking where possible
-.tar.gz distribution
-Desktop integration (.desktop file)
-macOS (amd64, arm64)
-Code signing
-.app bundle
-Permission handling automation
-Windows (amd64)
-DLL bundling
-.exe installer
-Registry integration
-Model Distribution
-Download on first run
-Progress indicator
-Checksum verification
-Retry logic
-Model cache management
-Version checking
-Auto-update option
-Documentation
-User guide
-Installation instructions
-Quick start tutorial
-Troubleshooting guide
-Developer documentation
-Architecture overview
-Contributing guide
-API documentation
-Final Verification
-E2E test (full pipeline)
-Performance benchmarks
-Memory leak tests (24h+ run)
-Cross-platform smoke tests
-Estimated Effort: 5-7 days
+- Session orchestrator.
+- Hotkey toggle flow.
+- Processing state.
+- ASR completion tracking.
+- Full-session fallback audio submission when VAD misses speech on manual stop.
+- Raw ASR logging and explicit empty-ASR logging.
+- Processing indicator:
+  - foreground: live `Processing... <elapsed> pending=N` line;
+  - daemon: periodic processing log.
 
-Overall Progress
-Phases
-Phase 1: Audio Foundation (COMPLETE)
-Phase 2: VAD (COMPLETE)
-Phase 3: ASR (COMPLETE)
-Phase 4: Text Merger (COMPLETE)
-Phase 5: Session Management (COMPLETE)
-- [x] Phase 7: Input Injection (RobotGo) @completed(2025-12-18)
-- [x] Phase 7.5: VAD & Audio Debugging @completed(2025-12-18)
-- [x] Phase 8: Production Readiness & Packaging @completed(2025-12-18)
-6/8 phases (75%)
+### Phase 6: Input Injection and UI
 
-Key Milestones
-Project structure created
-Audio capture working
-Zero-allocation pipeline verified
-Configuration system implemented
-Demo application built
-VAD integration
-Russian ASR verified (via demo)
-Text merging stable
-Hotkey functional
-Production builds
-1.0 Release
-Critical Requirements (All Phases)
-Russian Language Support
-Config: primary_language: "ru" ✅
-Model: Multilingual Whisper loaded
-Tests: Russian phrase accuracy >88%
-E2E: Mixed RU/EN conversation handling
-Performance Targets
-Audio callback: <1µs latency ✅
-Dropped frames: <0.1% ✅
-Memory (idle): <50 MB ✅
-Memory (active): <500 MB
-CPU (transcribing): <80% one core
-Latency (first word): <250ms
-Latency (updates): <3.5s
-Quality Targets
-Test coverage: >80% ✅ (87% Phase 1)
-Race detector: clean ✅
-Valgrind: no leaks
-WER (Russian): <12%
-WER (English): <8%
-Notes
-Phase 1 Complete: 2025-11-29
-Phase 2/3 Complete: 2025-12-17
-Phase 4/5 Complete: 2025-12-17
-Phase 6.5 (Refactor) Complete: 2025-12-17
-Next Review: After Phase 7 Input & UI implementation
-Target 1.0 Release: TBD (after Phase 7)
+Completed and extended.
 
-Russian Language: Mandatory, first-class support enforced at all phases.
+Implemented:
 
-Architecture Principle: CSP (Communicating Sequential Processes) — services communicate via channels, not shared memory.
+- Clipboard paste injection through platform input backend.
+- Target-window capture at recording start.
+- Focus restore before paste.
+- Focus guard to avoid pasting into the wrong window.
+- Clear `inject_unavailable` vs `focus_guard` error classification.
+- Tray UI with status, language, profile, ASR provider/key settings, doctor/log helpers, restart, and unified `Stop Speak2Type` action.
+
+### Phase 7: Production Readiness and Packaging
+
+Completed and extended.
+
+Implemented:
+
+- `make deps`, `make build`, `make dist`, `make dist-tray`, `make appimage`, `make release` workflows.
+- Linux AppImage/tarball release path.
+- macOS portable tarball release documentation.
+- Linux/macOS dependency download support for ONNX Runtime.
+- Release, install, usage, and README documentation refresh.
+- Third-party attribution docs.
+
+## Completed Beyond Original Plan
+
+### Hybrid ASR Providers
+
+Delivered:
+
+- `asr.Provider` interface.
+- Local whisper.cpp provider.
+- OpenAI API provider.
+- Groq API provider.
+- Provider-specific config/API key fields.
+- Tray provider/key management.
+- Hot reload without daemon restart.
+
+### Tray-First UX
+
+Delivered:
+
+- In tray builds, `speak2type run` starts daemon + tray.
+- Running `speak2type` without args prints CLI help/info.
+- `speak2type run --daemon` remains daemon-only.
+- Unified tray stop action stops daemon and tray.
+- Restart action restarts daemon and tray.
+
+### Focused Paste UX
+
+Delivered:
+
+- Capture target window when recording starts.
+- Restore focus before paste.
+- Block injection if the captured target cannot be restored.
+- Documented tray-start limitation: tray/menu focus may be captured, so F8 from the target app is the recommended flow.
+
+### macOS Documentation
+
+Delivered:
+
+- macOS build/release notes.
+- macOS runtime permissions: Microphone + Accessibility.
+- macOS config path.
+- macOS release artifacts in `RELEASE.md`.
+- `otool -L` verification contract.
+
+## Verification Commands
+
+Current verification baseline:
+
+```bash
+go test -tags no_whisper ./...
+go test -tags "tray no_whisper" ./cmd/speak2type ./internal/cli ./internal/cli/tray
+git diff --check -- README.md USAGE.md RELEASE.md INSTALL.md
+```
+
+Standard local build verification:
+
+```bash
+make deps
+make build
+make doctor
+./bin/speak2type run
+```
+
+## Current Constraints and Known Limitations
+
+- X11 remains the recommended Linux session for reliable hotkeys and paste injection.
+- Wayland injection remains experimental and disabled by default unless `--force-wayland-inject` is used.
+- Starting recording from tray may capture the tray/menu as the target window; F8 from the target app is the reliable flow.
+- Cloud ASR requires API keys from environment or config.
+- Local ASR performance depends heavily on model size and CPU.
+- macOS runtime injection requires Accessibility permission.
+
+## SDD Direction
+
+The next process improvement is to move from an implementation task list to spec-driven development.
+
+Recommended approach:
+
+- Adopt OpenSpec as the primary SDD workflow for this brownfield codebase.
+- Borrow Kiro's three-artifact structure inside each change:
+  - `requirements.md`
+  - `design.md`
+  - `tasks.md`
+- Write requirements with EARS-style statements.
+- Keep specs in-repo and review spec deltas before code changes.
+- Use GitHub Spec Kit only if a heavier `constitution -> specify -> plan -> tasks -> implement` flow is desired.
+
+Important note: some external research notes reference dates after the current project date, 2026-06-15. Treat those claims as research backlog items and verify current upstream status before implementation.
+
+### Proposed OpenSpec Layout
+
+```text
+openspec/
+  project.md
+  specs/
+    core-dictation/
+      requirements.md
+      design.md
+      tasks.md
+    input-injection/
+      requirements.md
+      design.md
+      tasks.md
+    asr-providers/
+      requirements.md
+      design.md
+      tasks.md
+  changes/
+    <change-id>/
+      proposal.md
+      requirements.md
+      design.md
+      tasks.md
+```
+
+### EARS Requirement Template
+
+Examples for future specs:
+
+```text
+REQ-001: The system shall capture microphone audio at 16 kHz mono.
+REQ-010: When the user presses F8, the system shall toggle recording state.
+REQ-020: While transcription is processing, the system shall display processing progress.
+REQ-030: If injection is unavailable, then the system shall surface an actionable error and avoid pasting text into the wrong target.
+REQ-040: Where cloud ASR is selected, the system shall load the provider-specific API key without requiring daemon restart.
+```
+
+## Track 1 Backlog: Existing Dictation Pipeline
+
+Near-term candidates:
+
+1. Initialize OpenSpec and write `project.md` constraints.
+2. Reverse-spec the current dictation pipeline before more code changes.
+3. Add specs for ASR provider hot reload and focused paste.
+4. Evaluate Silero VAD v6/v6.2 ONNX compatibility against `internal/vad` before changing defaults.
+5. Profile local whisper.cpp large-v3-turbo latency and identify CGO callback overhead.
+6. Improve Wayland injection strategy:
+   - evaluate ydotool as an explicit optional backend;
+   - evaluate XDG RemoteDesktop/libei where available;
+   - update `doctor` to detect and report actionable backend setup.
+7. Improve tray-start targeting UX, for example a delayed "record next focused window" mode.
+8. Add macOS smoke verification docs/scripts for permissions and injection.
+
+## Track 2 Backlog: Multi-Speaker Diarization to Sub-Agent Pipelines
+
+This is a new feature track, not part of the completed dictation MVP.
+
+Recommended first architecture:
+
+```text
+AudioService -> VAD -> diarization boundary -> ASR per utterance
+             -> speaker identity -> filter chain -> MCP sub-agent router
+```
+
+Build vs reuse:
+
+- Reuse existing AudioService, VAD, ASR service, event bus, and config patterns.
+- Reuse a diarization engine; do not train a diarizer.
+- Build the orchestration boundary, utterance event model, routing/filter chain, and MCP dispatch.
+
+Candidate implementation path:
+
+1. Prototype in-process offline/chunked diarization with sherpa-onnx Go bindings.
+2. Add an utterance event model:
+   - speaker cluster ID;
+   - optional enrolled speaker identity;
+   - timestamps;
+   - transcript;
+   - confidence/route metadata.
+3. Add speaker enrollment/identification using embeddings and cosine similarity.
+4. Add a Go filter chain:
+   - validate;
+   - normalize;
+   - classify;
+   - route.
+5. Add MCP sub-agent boundary using the official Go MCP SDK.
+6. Keep Python sidecars as optional later paths for pyannote/NeMo if accuracy or streaming needs justify them.
+
+Complexity warning:
+
+- Offline/chunked diarization is realistic for a Go-first prototype.
+- True low-latency streaming diarization with stable labels is still complex.
+- Stable speaker identity should rely on enrollment embeddings rather than ephemeral diarization cluster IDs.
+
+## Track 2 Decision Gates
+
+Use these thresholds to choose architecture:
+
+- If sub-second speaker labels are required, evaluate GPU-backed streaming diarization before committing to a Go-only architecture.
+- If offline or 1-2s delayed labels are acceptable, start with sherpa-onnx in-process.
+- If accuracy beats deployment simplicity, consider a Python sidecar behind gRPC or MCP.
+- If routed downstream work can be long-running, model sub-agents as MCP servers and use task handles once the target MCP spec/API is stable enough.
+
+## Definition of Done Going Forward
+
+A new feature is done when:
+
+- The behavior is captured in a spec or change-level proposal.
+- Requirements include acceptance criteria.
+- The implementation is covered by focused tests or a documented manual verification flow.
+- `go test -tags no_whisper ./...` passes.
+- Tray-specific changes also pass `go test -tags "tray no_whisper" ./cmd/speak2type ./internal/cli ./internal/cli/tray`.
+- User-facing behavior is reflected in `README.md`, `USAGE.md`, `INSTALL.md`, or `RELEASE.md` when applicable.
+
+## Historical Notes
+
+The original milestones were completed and superseded:
+
+- Phase 1: Audio Foundation.
+- Phase 2: VAD.
+- Phase 3: ASR.
+- Phase 4: Text Merger.
+- Phase 5: Session Management.
+- Phase 6: Input Injection and UI.
+- Phase 7: Production readiness and packaging.
