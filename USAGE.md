@@ -61,9 +61,20 @@ Log level (run flag):
 speak2type run --log-level warn
 ```
 
-ASR model path (for example, a local large-v3-turbo GGML model):
+Local ASR model path (for example, a local large-v3-turbo GGML model):
 ```bash
-speak2type run --asr-model models/ggml-large-v3-turbo-q5_0.bin
+speak2type run --asr-provider local --asr-model models/ggml-large-v3-turbo-q5_0.bin
+```
+
+Cloud ASR providers:
+```bash
+OPENAI_API_KEY=... speak2type run --asr-provider openai --asr-cloud-model gpt-4o-mini-transcribe
+GROQ_API_KEY=... speak2type run --asr-provider groq --asr-cloud-model whisper-large-v3-turbo
+```
+
+Useful cloud flags:
+```bash
+speak2type run --asr-provider groq --asr-timeout 10s --asr-prompt "Russian technical dictation"
 ```
 
 ---
@@ -80,6 +91,14 @@ Example:
 {
   "session": {
     "hotkey": "f8"
+  },
+  "asr": {
+    "provider": "local",
+    "model_path": "models/ggml-base.bin",
+    "language_mode": "auto",
+    "model": "",
+    "api_key_env": "",
+    "timeout_seconds": 30
   },
   "notifications": {
     "errors": true,
@@ -100,6 +119,8 @@ Speak2Type respects XDG standards. You can also override behaviors via env vars:
 - `DISPLAY` / `XAUTHORITY`: Required for Linux X11 global hotkeys and `xdotool` text injection.
 - `WAYLAND_DISPLAY`: Used by `wl-clipboard` on Wayland; key simulation remains experimental.
 - macOS Accessibility permission: Required for AppleScript/System Events input simulation.
+- `OPENAI_API_KEY`: Used by `asr.provider=openai` unless `asr.api_key_env` or `--asr-api-key-env` points elsewhere.
+- `GROQ_API_KEY`: Used by `asr.provider=groq` unless overridden.
 
 ### Service Integration
 To run Speak2Type automatically on login, use:

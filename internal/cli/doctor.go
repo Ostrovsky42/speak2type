@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/Ostrovsky42/speak2type/internal/audio"
 	"github.com/Ostrovsky42/speak2type/internal/input"
 	"github.com/Ostrovsky42/speak2type/internal/vad"
+	"github.com/Ostrovsky42/speak2type/pkg/config"
 )
 
 // Checksums
@@ -109,11 +111,23 @@ func RunDoctor() int {
 		failCount++
 	}
 
-	// 4. Models
-	printSection("4. Models")
+	// 4. Models and ASR provider
+	printSection("4. Models / ASR Provider")
 	checkModel("Silero VAD v5", "models/silero_vad.onnx", MD5_SileroV5, &failCount)
 	checkModel("Silero VAD v4 fallback", "models/silero_vad_v4.onnx", MD5_SileroV4, &failCount)
-	checkModel("Whisper GGML base", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
+
+	asrProvider, apiKeyEnv := configuredASRProvider()
+	switch asrProvider {
+	case "", "local":
+		checkModel("Whisper GGML base", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
+	case "openai":
+		checkCloudASRProvider("OpenAI", defaultString(apiKeyEnv, "OPENAI_API_KEY"), &failCount)
+	case "groq":
+		checkCloudASRProvider("Groq", defaultString(apiKeyEnv, "GROQ_API_KEY"), &failCount)
+	default:
+		printFail(fmt.Sprintf("Unsupported ASR provider in config: %s", asrProvider))
+		failCount++
+	}
 
 	// 5. Audio
 	printSection("5. Audio Stack")
@@ -154,6 +168,35 @@ func RunDoctor() int {
 }
 
 // Helpers
+
+func configuredASRProvider() (provider string, apiKeyEnv string) {
+	cfg, err := config.Load()
+	if err != nil {
+		printWarn(fmt.Sprintf("Failed to load config for ASR provider check: %v; assuming local", err))
+		return "local", ""
+	}
+	provider = strings.ToLower(strings.TrimSpace(cfg.ASR.Provider))
+	if provider == "" {
+		provider = "local"
+	}
+	return provider, strings.TrimSpace(cfg.ASR.APIKeyEnv)
+}
+
+func checkCloudASRProvider(name, apiKeyEnv string, failCount *int) {
+	if strings.TrimSpace(os.Getenv(apiKeyEnv)) == "" {
+		printFail(fmt.Sprintf("%s ASR API key missing: set %s", name, apiKeyEnv))
+		*failCount++
+		return
+	}
+	printOk(fmt.Sprintf("%s ASR API key found in %s", name, apiKeyEnv))
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
 
 func checkModel(name, path, expectedHash string, failCount *int) {
 	if info, err := os.Stat(path); err == nil {
