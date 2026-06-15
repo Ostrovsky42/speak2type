@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Ostrovsky42/speak2type/internal/cli"
 	"github.com/Ostrovsky42/speak2type/internal/daemon"
 	"github.com/Ostrovsky42/speak2type/internal/event"
 	"github.com/Ostrovsky42/speak2type/internal/ipc"
@@ -39,6 +40,15 @@ var (
 
 func RunTray() int {
 	ensureTrayTempDir()
+	if err := cli.AcquireTrayLock(); err != nil {
+		fmt.Printf("⚠️  Tray already running or lock failed: %v\n", err)
+		return 0
+	}
+	if err := cli.WriteTrayPID(); err != nil {
+		fmt.Printf("⚠️  Failed to write tray PID: %v\n", err)
+	}
+	defer cli.RemoveTrayPID()
+
 	systray.Run(onReady, onExit)
 	return 0
 }
@@ -66,9 +76,20 @@ func onReady() {
 	mCom := mProfile.AddSubMenuItemCheckbox("Commands", "Fast reaction", false)
 
 	systray.AddSeparator()
+	mASR := systray.AddMenuItem("ASR Provider", "Select speech recognition provider")
+	mASRLocal := mASR.AddSubMenuItemCheckbox("Local whisper.cpp", "Use local Whisper model", true)
+	mASROpenAI := mASR.AddSubMenuItemCheckbox("OpenAI", "Use OpenAI audio transcriptions", false)
+	mASRGroq := mASR.AddSubMenuItemCheckbox("Groq", "Use Groq speech-to-text", false)
+	mASR.AddSubMenuItem("Restart daemon after changing provider", "Provider changes apply after daemon restart").Disable()
+	mOpenAIKey := mASR.AddSubMenuItem("Set OpenAI API Key", "Store OpenAI API key in config")
+	mGroqKey := mASR.AddSubMenuItem("Set Groq API Key", "Store Groq API key in config")
+	applyASRProviderChecks(mASRLocal, mASROpenAI, mASRGroq)
+
+	systray.AddSeparator()
 	mDoctor := systray.AddMenuItem("Run Doctor", "Check system status")
 	mLogs := systray.AddMenuItem("Open Logs", "View daemon logs")
 	systray.AddSeparator()
+	mRestart := systray.AddMenuItem("Restart Speak2Type", "Restart daemon and tray")
 	mQuit := systray.AddMenuItem("Quit Tray", "Exit tray application")
 	mStopDaemon := systray.AddMenuItem("Stop Daemon", "Terminate background process")
 
@@ -121,10 +142,34 @@ func onReady() {
 				callIPC("set_profile", map[string]string{"profile": "dictation"})
 			case <-mCom.ClickedCh:
 				callIPC("set_profile", map[string]string{"profile": "commands"})
+			case <-mASRLocal.ClickedCh:
+				if saveASRProvider("local") == nil {
+					applyASRProviderChecks(mASRLocal, mASROpenAI, mASRGroq)
+				}
+			case <-mASROpenAI.ClickedCh:
+				if saveASRProvider("openai") == nil {
+					applyASRProviderChecks(mASRLocal, mASROpenAI, mASRGroq)
+				}
+			case <-mASRGroq.ClickedCh:
+				if saveASRProvider("groq") == nil {
+					applyASRProviderChecks(mASRLocal, mASROpenAI, mASRGroq)
+				}
+			case <-mOpenAIKey.ClickedCh:
+				if key := promptSecret("OpenAI API Key"); key != "" {
+					_ = saveASRAPIKey("openai", key)
+				}
+			case <-mGroqKey.ClickedCh:
+				if key := promptSecret("Groq API Key"); key != "" {
+					_ = saveASRAPIKey("groq", key)
+				}
 			case <-mDoctor.ClickedCh:
 				openTerminal("speak2type doctor")
 			case <-mLogs.ClickedCh:
 				openTerminal(fmt.Sprintf("tail -f %s", daemon.GetLogPath()))
+			case <-mRestart.ClickedCh:
+				execPath, _ := os.Executable()
+				cmd := exec.Command(execPath, "restart")
+				_ = cmd.Start()
 			case <-mStopDaemon.ClickedCh:
 				callIPC("quit", nil)
 			case <-mQuit.ClickedCh:
@@ -363,6 +408,111 @@ func formatHotkey(value string) string {
 		return ""
 	}
 	return strings.ToUpper(value)
+}
+
+func saveASRProvider(provider string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	cfg.ASR.Provider = provider
+	switch provider {
+	case "openai":
+		if strings.TrimSpace(cfg.ASR.Model) == "" || strings.HasPrefix(cfg.ASR.Model, "whisper-") {
+			cfg.ASR.Model = "gpt-4o-mini-transcribe"
+		}
+		if cfg.ASR.APIKeyEnv == "" {
+			cfg.ASR.APIKeyEnv = "OPENAI_API_KEY"
+		}
+	case "groq":
+		if strings.TrimSpace(cfg.ASR.Model) == "" || strings.HasPrefix(cfg.ASR.Model, "gpt-") {
+			cfg.ASR.Model = "whisper-large-v3-turbo"
+		}
+		if cfg.ASR.APIKeyEnv == "" {
+			cfg.ASR.APIKeyEnv = "GROQ_API_KEY"
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	callIPC("reload_config", nil)
+	showInfo("ASR provider saved. Restart the daemon to apply provider changes.")
+	return nil
+}
+
+func saveASRAPIKey(provider, key string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	cfg.ASR.Provider = provider
+	key = strings.TrimSpace(key)
+	if provider == "openai" {
+		cfg.ASR.OpenAIAPIKey = key
+		cfg.ASR.APIKeyEnv = "OPENAI_API_KEY"
+		if strings.TrimSpace(cfg.ASR.Model) == "" || strings.HasPrefix(cfg.ASR.Model, "whisper-") {
+			cfg.ASR.Model = "gpt-4o-mini-transcribe"
+		}
+	} else if provider == "groq" {
+		cfg.ASR.GroqAPIKey = key
+		cfg.ASR.APIKeyEnv = "GROQ_API_KEY"
+		if strings.TrimSpace(cfg.ASR.Model) == "" || strings.HasPrefix(cfg.ASR.Model, "gpt-") {
+			cfg.ASR.Model = "whisper-large-v3-turbo"
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	callIPC("reload_config", nil)
+	showInfo("API key saved in config. Restart the daemon to apply ASR provider changes.")
+	return nil
+}
+
+func applyASRProviderChecks(local, openai, groq *systray.MenuItem) {
+	provider := "local"
+	if cfg, err := config.Load(); err == nil {
+		provider = strings.ToLower(strings.TrimSpace(cfg.ASR.Provider))
+	}
+	if provider == "" {
+		provider = "local"
+	}
+	local.Uncheck()
+	openai.Uncheck()
+	groq.Uncheck()
+	switch provider {
+	case "openai":
+		openai.Check()
+	case "groq":
+		groq.Check()
+	default:
+		local.Check()
+	}
+}
+
+func promptSecret(title string) string {
+	if runtime.GOOS != "linux" {
+		openConfigPath()
+		return ""
+	}
+	if _, err := exec.LookPath("zenity"); err != nil {
+		openConfigPath()
+		return ""
+	}
+	out, err := exec.Command("zenity", "--password", "--title", title).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func showInfo(message string) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if _, err := exec.LookPath("zenity"); err != nil {
+		return
+	}
+	_ = exec.Command("zenity", "--info", "--text", message).Start()
 }
 
 func openConfigPath() {

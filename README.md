@@ -75,11 +75,14 @@ Binaries will be placed in `./bin/`.
 ./bin/speak2type run -device-index 0 -lang ru
 ```
 
+In tray builds, `run` starts the background daemon and opens the tray UI. Running the binary without arguments prints CLI usage/info.
+
 **Cloud ASR Providers:**
 ```bash
 OPENAI_API_KEY=... ./bin/speak2type run --asr-provider openai --asr-cloud-model gpt-4o-mini-transcribe
 GROQ_API_KEY=... ./bin/speak2type run --asr-provider groq --asr-cloud-model whisper-large-v3-turbo
 ```
+The tray menu can also save provider settings plus separate OpenAI/Groq API keys under `ASR Provider`; restart the daemon after changing them.
 
 **Verify System:**
 ```bash

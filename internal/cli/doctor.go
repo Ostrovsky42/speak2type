@@ -99,14 +99,14 @@ func RunDoctor() int {
 	checkModel("Silero VAD v5", "models/silero_vad.onnx", MD5_SileroV5, &failCount)
 	checkModel("Silero VAD v4 fallback", "models/silero_vad_v4.onnx", MD5_SileroV4, &failCount)
 
-	asrProvider, apiKeyEnv := configuredASRProvider()
+	asrProvider, apiKey, apiKeyEnv := configuredASRProvider()
 	switch asrProvider {
 	case "", "local":
 		checkModel("Whisper GGML base", "models/ggml-base.bin", MD5_GGMLBase, &failCount)
 	case "openai":
-		checkCloudASRProvider("OpenAI", defaultString(apiKeyEnv, "OPENAI_API_KEY"), &failCount)
+		checkCloudASRProvider("OpenAI", apiKey, defaultString(apiKeyEnv, "OPENAI_API_KEY"), &failCount)
 	case "groq":
-		checkCloudASRProvider("Groq", defaultString(apiKeyEnv, "GROQ_API_KEY"), &failCount)
+		checkCloudASRProvider("Groq", apiKey, defaultString(apiKeyEnv, "GROQ_API_KEY"), &failCount)
 	default:
 		printFail(fmt.Sprintf("Unsupported ASR provider in config: %s", asrProvider))
 		failCount++
@@ -150,22 +150,37 @@ func RunDoctor() int {
 
 // Helpers
 
-func configuredASRProvider() (provider string, apiKeyEnv string) {
+func configuredASRProvider() (provider string, apiKey string, apiKeyEnv string) {
 	cfg, err := config.Load()
 	if err != nil {
 		printWarn(fmt.Sprintf("Failed to load config for ASR provider check: %v; assuming local", err))
-		return "local", ""
+		return "local", "", ""
 	}
 	provider = strings.ToLower(strings.TrimSpace(cfg.ASR.Provider))
 	if provider == "" {
 		provider = "local"
 	}
-	return provider, strings.TrimSpace(cfg.ASR.APIKeyEnv)
+	apiKey = strings.TrimSpace(cfg.ASR.APIKey)
+	switch provider {
+	case "openai":
+		if key := strings.TrimSpace(cfg.ASR.OpenAIAPIKey); key != "" {
+			apiKey = key
+		}
+	case "groq":
+		if key := strings.TrimSpace(cfg.ASR.GroqAPIKey); key != "" {
+			apiKey = key
+		}
+	}
+	return provider, apiKey, strings.TrimSpace(cfg.ASR.APIKeyEnv)
 }
 
-func checkCloudASRProvider(name, apiKeyEnv string, failCount *int) {
+func checkCloudASRProvider(name, apiKey, apiKeyEnv string, failCount *int) {
+	if strings.TrimSpace(apiKey) != "" {
+		printOk(fmt.Sprintf("%s ASR API key found in config", name))
+		return
+	}
 	if strings.TrimSpace(os.Getenv(apiKeyEnv)) == "" {
-		printFail(fmt.Sprintf("%s ASR API key missing: set %s", name, apiKeyEnv))
+		printFail(fmt.Sprintf("%s ASR API key missing: set %s or provider-specific config key", name, apiKeyEnv))
 		*failCount++
 		return
 	}

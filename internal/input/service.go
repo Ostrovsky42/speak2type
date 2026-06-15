@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"runtime"
 	"sync"
 	"time"
@@ -14,10 +15,16 @@ import (
 
 // KeyboardInjector handles keyboard input simulation & text injection.
 type KeyboardInjector struct {
-	mu        sync.Mutex
-	enabled   bool
-	isWayland bool
-	conf      Config
+	mu           sync.Mutex
+	enabled      bool
+	isWayland    bool
+	conf         Config
+	targetWindow *targetWindow
+}
+
+type targetWindow struct {
+	handle robotgo.Handle
+	label  string
 }
 
 var ErrInjectionDisabled = errors.New("input injection disabled")
@@ -30,7 +37,7 @@ type Config struct {
 	DryRun       bool          // If true, only log actions, don't execute
 	FocusDelay   time.Duration // Delay before paste (e.g. 100ms)
 	SettleDelay  time.Duration // Delay after write before Ctrl+V (e.g. 100ms)
-	PasteDelay   time.Duration // Delay after Ctrl+V before restore (e.g. 200ms)
+	PasteDelay   time.Duration // Delay after Ctrl+V before restore (e.g. 700ms)
 }
 
 // NewKeyboardInjector creates a new input injector.
@@ -56,6 +63,54 @@ func NewKeyboardInjector(cfg Config) (*KeyboardInjector, error) {
 	}
 
 	return injector, nil
+}
+
+// CaptureTargetWindow stores the active window so later paste can return focus to it.
+func (s *KeyboardInjector) CaptureTargetWindow() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	label := activeWindowLabel()
+	s.targetWindow = &targetWindow{
+		handle: robotgo.GetActive(),
+		label:  label,
+	}
+	return label
+}
+
+// FocusTargetWindow activates the window captured at recording start.
+func (s *KeyboardInjector) FocusTargetWindow() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.targetWindow == nil {
+		return nil
+	}
+	if !s.enabled {
+		return ErrInjectionDisabled
+	}
+	robotgo.SetActive(s.targetWindow.handle)
+	time.Sleep(120 * time.Millisecond)
+	return nil
+}
+
+// IsTargetWindowActive reports whether the captured target window is active now.
+func (s *KeyboardInjector) IsTargetWindowActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.targetWindow == nil {
+		return true
+	}
+	return reflect.DeepEqual(robotgo.GetActive(), s.targetWindow.handle)
+}
+
+func activeWindowLabel() string {
+	title := robotgo.GetTitle()
+	if title != "" {
+		return title
+	}
+	return fmt.Sprintf("PID:%d", robotgo.GetPid())
 }
 
 // Type simulates character-by-character typing.
@@ -139,7 +194,7 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	if s.conf.PasteDelay > 0 {
 		time.Sleep(s.conf.PasteDelay)
 	} else {
-		time.Sleep(300 * time.Millisecond) // Slightly more conservative
+		time.Sleep(700 * time.Millisecond) // Give X11/Wayland clients time to request clipboard data
 	}
 
 	// 6. Restore original content
@@ -154,11 +209,7 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 // GetActiveWindow returns a string identifying the current foreground window.
 // It uses title or PID depending on what robotgo provides best.
 func (s *KeyboardInjector) GetActiveWindow() string {
-	title := robotgo.GetTitle()
-	if title != "" {
-		return title
-	}
-	return fmt.Sprintf("PID:%d", robotgo.GetPid())
+	return activeWindowLabel()
 }
 
 // Enable toggles injection functionality.

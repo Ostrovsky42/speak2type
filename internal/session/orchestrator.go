@@ -16,9 +16,10 @@ import (
 
 // Config holds configuration for the orchestrator.
 type Config struct {
-	SampleRate int
-	ChunkSize  int
-	NoRestore  bool
+	SampleRate        int
+	ChunkSize         int
+	NoRestore         bool
+	DisableFocusGuard bool
 }
 
 // Dependencies aggregates the services required by the orchestrator.
@@ -222,9 +223,9 @@ func (o *Orchestrator) StartSession(mode Mode) error {
 	o.processingInjectionFailed = false
 	o.inputUnavailableReported = false
 
-	// Capture focus window
+	// Capture the target window so paste can return there after long ASR processing.
 	if o.deps.Input != nil {
-		o.focusWindow = o.deps.Input.GetActiveWindow()
+		o.focusWindow = o.deps.Input.CaptureTargetWindow()
 		fmt.Printf(" [Orch] Focus captured: %s\n", o.focusWindow)
 	}
 
@@ -527,19 +528,26 @@ func (o *Orchestrator) injectText(text string) {
 		return
 	}
 
-	currentWindow := o.deps.Input.GetActiveWindow()
-	if currentWindow != o.focusWindow {
-		errMsg := fmt.Sprintf("focus guard: window changed from %q to %q (injection cancelled)", o.focusWindow, currentWindow)
-		o.events <- Event{
-			Type:  EventError,
-			Text:  text,
-			Error: fmt.Errorf("%s", errMsg),
+	if !o.conf.DisableFocusGuard {
+		if err := o.deps.Input.FocusTargetWindow(); err != nil {
+			errMsg := fmt.Sprintf("focus guard: failed to restore target window %q: %v", o.focusWindow, err)
+			o.events <- Event{Type: EventError, Text: text, Error: fmt.Errorf("%s", errMsg)}
+			o.publishError("focus_guard", errMsg, "refocus the target window and retry")
+			if state == StateProcessing {
+				o.markInjectionFailed()
+			}
+			return
 		}
-		o.publishError("focus_guard", errMsg, "refocus the target window and retry")
-		if state == StateProcessing {
-			o.markInjectionFailed()
+		if !o.deps.Input.IsTargetWindowActive() {
+			currentWindow := o.deps.Input.GetActiveWindow()
+			errMsg := fmt.Sprintf("focus guard: target window %q is not active (current %q, injection cancelled)", o.focusWindow, currentWindow)
+			o.events <- Event{Type: EventError, Text: text, Error: fmt.Errorf("%s", errMsg)}
+			o.publishError("focus_guard", errMsg, "refocus the target window and retry")
+			if state == StateProcessing {
+				o.markInjectionFailed()
+			}
+			return
 		}
-		return
 	}
 
 	if err := o.deps.Input.Paste(text+" ", !o.conf.NoRestore); err != nil {

@@ -50,14 +50,20 @@ func RunSession(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "don't perform actual injection, only log")
 	observe := fs.Duration("observe", 0, "observe and print active window changes for the given duration (e.g. 10s)")
 	focusDelay := fs.Int("focus-delay-ms", 0, "delay before paste (ms)")
-	pasteDelay := fs.Int("paste-delay-ms", 200, "delay after Ctrl+V (ms) (default 200)")
+	pasteDelay := fs.Int("paste-delay-ms", 700, "delay after Ctrl+V (ms) (default 700)")
 	settleDelay := fs.Int("settle-delay-ms", 150, "delay after clipboard write (ms) (default 150)")
 	daemon := fs.Bool("daemon", false, "run in background")
 	hotkey := fs.String("hotkey", "", "global hotkey (default from config, fallback f8)")
 	logLevel := fs.String("log-level", "", "log level: debug, info, warn, error")
+	disableFocusGuard := fs.Bool("disable-focus-guard", false, "disable focus guard (allow pasting even if active window changed)")
 
 	var sigChan chan os.Signal
 	fs.Parse(args)
+
+	if IsDaemonRunning() {
+		fmt.Println("❌ speak2type is already running.")
+		return 1
+	}
 
 	if *daemon && os.Getenv("SPEAK2TYPE_DAEMON") != "1" {
 		fmt.Println("🚀 Spawning Speak2Type in background...")
@@ -83,21 +89,33 @@ func RunSession(args []string) int {
 		return 0
 	}
 
-	if os.Getenv("SPEAK2TYPE_DAEMON") == "1" {
-		// Acquire lock before writing PID
-		if err := AcquireLock(); err != nil {
-			log.Fatalf("❌ Lock failed: %v", err)
-		}
-
-		if err := WritePID(); err != nil {
-			log.Printf("⚠️  Failed to write PID file: %v", err)
-		}
-		defer RemovePID()
-
-		// Setup signal handling for clean exit
-		sigChan = make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// Acquire lock before writing PID
+	if err := AcquireLock(); err != nil {
+		log.Fatalf("❌ Lock failed: %v", err)
 	}
+
+	if err := WritePID(); err != nil {
+		log.Printf("⚠️  Failed to write PID file: %v", err)
+	}
+	defer RemovePID()
+
+	shutdownChan := make(chan struct{})
+	var shutdownOnce sync.Once
+	requestShutdown := func() {
+		shutdownOnce.Do(func() {
+			close(shutdownChan)
+		})
+	}
+
+	// Setup signal handling for clean exit
+	sigChan = make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		s := <-sigChan
+		log.Printf("Received signal %v, shutting down...", s)
+		requestShutdown()
+	}()
 
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
@@ -185,14 +203,6 @@ func RunSession(args []string) int {
 		return nil
 	}
 
-	shutdownChan := make(chan struct{})
-	var shutdownOnce sync.Once
-	requestShutdown := func() {
-		shutdownOnce.Do(func() {
-			close(shutdownChan)
-		})
-	}
-
 	fmt.Println("🎹 Speak2Type Session Orchestrator")
 	fmt.Println("===============================")
 
@@ -268,6 +278,9 @@ func RunSession(args []string) int {
 	if strings.TrimSpace(*asrEndpoint) != "" {
 		asrConfig.Endpoint = strings.TrimSpace(*asrEndpoint)
 	}
+	asrConfig.APIKey = strings.TrimSpace(cfg.ASR.APIKey)
+	asrConfig.OpenAIAPIKey = strings.TrimSpace(cfg.ASR.OpenAIAPIKey)
+	asrConfig.GroqAPIKey = strings.TrimSpace(cfg.ASR.GroqAPIKey)
 	asrConfig.APIKeyEnv = strings.TrimSpace(cfg.ASR.APIKeyEnv)
 	if strings.TrimSpace(*asrAPIKeyEnv) != "" {
 		asrConfig.APIKeyEnv = strings.TrimSpace(*asrAPIKeyEnv)
@@ -378,9 +391,10 @@ func RunSession(args []string) int {
 	}
 
 	orchConfig := session.Config{
-		SampleRate: 16000,
-		ChunkSize:  vadConfig.ChunkSize,
-		NoRestore:  *noRestore,
+		SampleRate:        16000,
+		ChunkSize:         vadConfig.ChunkSize,
+		NoRestore:         *noRestore,
+		DisableFocusGuard: *disableFocusGuard || cfg.Session.DisableFocusGuard,
 	}
 
 	orch := session.NewOrchestrator(orchConfig, deps)
@@ -577,13 +591,7 @@ func RunSession(args []string) int {
 	defer hl.Stop()
 
 	if os.Getenv("SPEAK2TYPE_DAEMON") == "1" {
-		// Wait for signal instead of stdin
-		select {
-		case s := <-sigChan:
-			log.Printf("Received signal %v, shutting down daemon...", s)
-		case <-shutdownChan:
-			log.Printf("Shutdown requested, shutting down daemon...")
-		}
+		<-shutdownChan
 		return 0
 	}
 

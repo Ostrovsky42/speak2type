@@ -32,6 +32,9 @@ type ASRConfig struct {
 	ModelPath      string
 	Model          string
 	Endpoint       string
+	APIKey         string
+	OpenAIAPIKey   string
+	GroqAPIKey     string
 	APIKeyEnv      string
 	LanguageMode   string // "auto", "ru", "en"
 	Prompt         string

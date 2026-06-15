@@ -42,18 +42,21 @@ type VADConfig struct {
 
 // ASRConfig defines Automatic Speech Recognition parameters.
 type ASRConfig struct {
-	Provider         string `json:"provider"`          // "local", "openai", or "groq"
-	ModelPath        string `json:"model_path"`        // Path to local ggml model
-	Model            string `json:"model"`             // Cloud provider model ID
-	Endpoint         string `json:"endpoint"`          // Optional OpenAI-compatible transcription endpoint override
-	APIKeyEnv        string `json:"api_key_env"`       // Environment variable containing the cloud API key
-	LanguageMode     string `json:"language_mode"`     // "auto", "ru", "en"
-	Prompt           string `json:"prompt"`            // Optional ASR context prompt
-	ResponseFormat   string `json:"response_format"`   // "json" or "text" for cloud providers
-	TimeoutSeconds   int    `json:"timeout_seconds"`   // Cloud request timeout
-	PrimaryLanguage  string `json:"primary_language"`  // "ru"
-	FallbackLanguage string `json:"fallback_language"` // "en"
-	Translate        bool   `json:"translate"`         // false (transcribe, don't translate)
+	Provider         string `json:"provider"`                 // "local", "openai", or "groq"
+	ModelPath        string `json:"model_path"`               // Path to local ggml model
+	Model            string `json:"model"`                    // Cloud provider model ID
+	Endpoint         string `json:"endpoint"`                 // Optional OpenAI-compatible transcription endpoint override
+	APIKey           string `json:"api_key,omitempty"`        // Legacy fallback cloud API key stored in config
+	OpenAIAPIKey     string `json:"openai_api_key,omitempty"` // Optional OpenAI API key stored in config
+	GroqAPIKey       string `json:"groq_api_key,omitempty"`   // Optional Groq API key stored in config
+	APIKeyEnv        string `json:"api_key_env"`              // Environment variable containing the cloud API key
+	LanguageMode     string `json:"language_mode"`            // "auto", "ru", "en"
+	Prompt           string `json:"prompt"`                   // Optional ASR context prompt
+	ResponseFormat   string `json:"response_format"`          // "json" or "text" for cloud providers
+	TimeoutSeconds   int    `json:"timeout_seconds"`          // Cloud request timeout
+	PrimaryLanguage  string `json:"primary_language"`         // "ru"
+	FallbackLanguage string `json:"fallback_language"`        // "en"
+	Translate        bool   `json:"translate"`                // false (transcribe, don't translate)
 }
 
 // MergerConfig defines text merging parameters
@@ -64,10 +67,11 @@ type MergerConfig struct {
 
 // SessionConfig defines session behavior
 type SessionConfig struct {
-	Mode            string `json:"mode"`             // "quick_note" | "continuous"
-	Hotkey          string `json:"hotkey"`           // "f8"
-	AutoCapitalize  bool   `json:"auto_capitalize"`  // true
-	AutoPunctuation bool   `json:"auto_punctuation"` // true
+	Mode              string `json:"mode"`             // "quick_note" | "continuous"
+	Hotkey            string `json:"hotkey"`           // "f8"
+	AutoCapitalize    bool   `json:"auto_capitalize"`  // true
+	AutoPunctuation   bool   `json:"auto_punctuation"` // true
+	DisableFocusGuard bool   `json:"disable_focus_guard"`
 }
 
 // UIConfig defines user interface parameters
@@ -194,7 +198,7 @@ func (c *Config) Save() error {
 
 	// Create config directory if it doesn't exist
 	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -205,8 +209,11 @@ func (c *Config) Save() error {
 	}
 
 	// Write to file
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
+	}
+	if err := os.Chmod(configPath, 0600); err != nil {
+		return fmt.Errorf("failed to secure config file permissions: %w", err)
 	}
 
 	return nil

@@ -10,12 +10,11 @@ Speak2Type operates on a **Client-Server model**:
 
 ### Quick Start
 ```bash
-# 1. Start the brain
-speak2type run --daemon
-
-# 2. Start the UI
-speak2type tray
+# Tray build: start the daemon and tray UI
+speak2type run
 ```
+
+Running `speak2type` without arguments prints CLI usage/info. For daemon-only startup, use `speak2type run --daemon`.
 
 ---
 
@@ -43,8 +42,8 @@ Optimized for fast system control and short snippets.
 
 | Command | Description |
 | :--- | :--- |
-| `speak2type run` | Start in foreground (interactive). |
-| `speak2type run --daemon` | Start as background service. |
+| `speak2type run` | In tray builds: start daemon + tray UI. In non-tray builds: start in foreground. |
+| `speak2type run --daemon` | Start daemon only as a background service. |
 | `speak2type stop` | Terminate the running daemon safely. |
 | `speak2type status` | Check if daemon is alive & current state. |
 | `speak2type tray` | Launch the Systray UI (requires Gtk/AppIndicator). |
@@ -76,6 +75,8 @@ Useful cloud flags:
 speak2type run --asr-provider groq --asr-timeout 10s --asr-prompt "Russian technical dictation"
 ```
 
+The tray menu can save the ASR provider and separate OpenAI/Groq API keys under `ASR Provider`. Keys saved from tray are stored as plaintext in `~/.config/speak2type/config.json`; restart the daemon after changing provider or key.
+
 ---
 
 ## ⚙️ Configuration & Customization
@@ -96,6 +97,8 @@ Example:
     "model_path": "models/ggml-base.bin",
     "language_mode": "auto",
     "model": "",
+    "openai_api_key": "",
+    "groq_api_key": "",
     "api_key_env": "",
     "timeout_seconds": 30
   },
@@ -115,9 +118,11 @@ Speak2Type respects XDG standards. You can also override behaviors via env vars:
 
 - `XDG_RUNTIME_DIR`: Location of the IPC socket (`/speak2type/speak2type.sock`).
 - `XDG_STATE_HOME`: Location of logs (`/speak2type/speak2type.log`).
-- `DISPLAY` / `XAUTHORITY`: Required for global hotkeys and text injection.
-- `OPENAI_API_KEY`: Used by `asr.provider=openai` unless `asr.api_key_env` or `--asr-api-key-env` points elsewhere.
-- `GROQ_API_KEY`: Used by `asr.provider=groq` unless overridden.
+- `DISPLAY` / `XAUTHORITY`: Required for Linux X11 global hotkeys and text injection.
+- `WAYLAND_DISPLAY`: Wayland key simulation remains experimental.
+- macOS Accessibility permission: Required for input simulation.
+- `OPENAI_API_KEY`: Used by `asr.provider=openai` unless `asr.openai_api_key` is set, or `asr.api_key_env` / `--asr-api-key-env` points elsewhere.
+- `GROQ_API_KEY`: Used by `asr.provider=groq` unless `asr.groq_api_key` is set, or `asr.api_key_env` / `--asr-api-key-env` points elsewhere.
 
 ### Service Integration
 To run Speak2Type automatically on login, use:
@@ -137,7 +142,7 @@ speak2type disable
 If Speak2Type isn't responding:
 1.  **Run Doctor**: `speak2type doctor` will point out missing libraries or audio issues.
 2.  **Check Logs**: `tail -f ~/.local/state/speak2type/speak2type.log`.
-3.  **Restart**: `speak2type stop && speak2type run --daemon`.
+3.  **Restart**: `speak2type stop && speak2type run`.
 
 > [!TIP]
 > **Wayland Support**: In Wayland sessions, global hotkeys might be limited. We recommend X11 for the best experience with global text injection.
