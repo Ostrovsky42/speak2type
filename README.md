@@ -3,14 +3,12 @@
 Modular, highly concurrent pipeline for voice input (VAD -> ASR -> Text Stabilization -> Processing) in Go.
 Designed for Linux (X11-first) and macOS with platform-specific input backends.
 
-> **Status**: Production Ready (Phase 8 Complete)
-
 ## Features
 
 - **Robust VAD**: Silero VAD v5 (ONNX) with v4 fallback and state preservation.
 - **Hybrid ASR**: Local whisper.cpp by default, with optional OpenAI and Groq cloud transcription providers.
 - **Text Stability**: LCS-based merging for flicker-free streaming.
-- **Reliable Injection**: Clipboard-based text insertion via platform input backends.
+- **Reliable Injection**: Clipboard-based text insertion with target-window capture and focus restore.
 - **Diagnostics**: Built-in `doctor` command for environment verification.
 
 ## Docs
@@ -39,16 +37,15 @@ This downloads checksum-pinned Silero VAD, Whisper GGML, ONNX Runtime, and whisp
 
 ### 1. Prerequisites
 
-- **Linux**: X11 is recommended for reliable text injection (`xdotool` + `xclip`/`xsel`). Wayland uses `wl-clipboard` for clipboard access and remains experimental for key simulation.
-- **macOS**: Accessibility permissions required for AppleScript/System Events input simulation.
+- **Linux**: X11 is recommended for reliable text injection. Wayland key simulation remains experimental and is disabled by default unless `--force-wayland-inject` is used.
+- **macOS**: Microphone and Accessibility permissions are required for capture and text injection.
 
 **Install System Dependencies (Ubuntu/Debian):**
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential cmake pkg-config libasound2-dev \
-    libx11-dev libxtst-dev libpng-dev xdotool xclip wl-clipboard
+    libx11-dev libxtst-dev libpng-dev
 ```
-*(Note: `xclip` or `xsel` is used for X11 clipboard operations; `wl-clipboard` provides `wl-copy`/`wl-paste` on Wayland.)*
 
 ### 2. Setup & Build
 
@@ -106,11 +103,12 @@ The tray menu can also save provider settings plus separate OpenAI/Groq API keys
 
 ### ⚠️ Limitations & Risks
 
-1. **Wayland**: Text injection is **experimental** on Wayland. It may silently fail. Use X11 for reliability.
-2. **Clipboard Injection**:
-   - We use `Ctrl+V` simulation. Apps that block paste (e.g., password fields, some terminals) will not work.
-   - **Race Conditions**: In rare cases, if you copy something exactly when Speak2Type pastes, the clipboard content might mix.
-   - **Focus**: Text is sent to the *active window*. If a popup steals focus, text goes there.
+1. **Wayland**: Text injection is **experimental** on Wayland and disabled by default. Use X11 for Linux reliability.
+2. **macOS Permissions**: Grant Microphone and Accessibility permissions before using capture or injection.
+3. **Clipboard Injection**:
+   - We use paste shortcut simulation (`Ctrl+V` / `Cmd+V`). Apps that block paste will not work.
+   - **Race Conditions**: If you copy something exactly when Speak2Type pastes, clipboard restore may capture inconsistent state.
+   - **Focus Guard**: The app captures the active target window at recording start and restores focus before paste. If the target cannot be restored, injection is blocked.
    - **Privacy**: The clipboard is briefly used. We attempt to restore it, but crashes might leave the clipboard with the injected text.
 
 **Debug VAD (Silence Issue?):**
@@ -121,22 +119,14 @@ The tray menu can also save provider settings plus separate OpenAI/Groq API keys
 
 ---
 
-## 🔧 Architecture & Status
-
-| Core Component | Status | Description |
-| :--- | :---: | :--- |
-| **Infrastructure** | ✅ Stable | `Makefile`, `cmd/doctor`, Pre-flight checks |
-| **AudioService** | ✅ Stable | Zero-alloc ring buffer, malgo/miniaudio |
-| **VADService** | ✅ Stable | Silero VAD v5 default with v4 fallback; v6 validation pending |
-| **ASRService** | ✅ Stable | Provider interface: local whisper.cpp, OpenAI API, Groq API |
-| **Injector** | ✅ Stable | Linux `xdotool` + clipboard tools; macOS AppleScript/System Events |
-
 ## 🛠️ Troubleshooting
 
 ### Input Injection Fails / Types Gibberish
-- **Cause**: Linux keyboard layouts handle direct key-codes poorly (e.g. typing Russian on English layout).
-- **Fix**: Speak2Type uses **Clipboard Paste** by default. Ensure `xdotool` and `xclip` or `xsel` are installed on X11; use `wl-clipboard` on Wayland.
-- **Wayland**: If `make doctor` shows "Session Type: wayland", injection is **unstable**. Switch to X11.
+- **Cause**: Direct key-code typing is unreliable across layouts and OSes.
+- **Fix**: Speak2Type uses clipboard paste by default through the platform input backend.
+- **Focus Guard**: Start recording from the target application with F8. If recording is started from tray, the tray/menu may be captured instead of the editor.
+- **Wayland**: If `make doctor` shows "Session Type: wayland", injection is experimental. Switch to X11 for reliability.
+- **macOS**: Confirm Accessibility permission in System Settings if paste does not happen.
 
 ### Cloud ASR Fails
 - **OpenAI**: set `OPENAI_API_KEY` or override with `--asr-api-key-env`.
