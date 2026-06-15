@@ -97,7 +97,9 @@ Speak2Type respects XDG standards. You can also override behaviors via env vars:
 
 - `XDG_RUNTIME_DIR`: Location of the IPC socket (`/speak2type/speak2type.sock`).
 - `XDG_STATE_HOME`: Location of logs (`/speak2type/speak2type.log`).
-- `DISPLAY` / `XAUTHORITY`: Required for global hotkeys and text injection.
+- `DISPLAY` / `XAUTHORITY`: Required for Linux X11 global hotkeys and `xdotool` text injection.
+- `WAYLAND_DISPLAY`: Used by `wl-clipboard` on Wayland; key simulation remains experimental.
+- macOS Accessibility permission: Required for AppleScript/System Events input simulation.
 
 ### Service Integration
 To run Speak2Type automatically on login, use:

@@ -1,7 +1,7 @@
 # Speak2Type
 
 Modular, highly concurrent pipeline for voice input (VAD -> ASR -> Text Stabilization -> Processing) in Go.
-Designed for Linux (X11) with a macOS nohook build path.
+Designed for Linux (X11-first) and macOS with platform-specific input backends.
 
 > **Status**: Production Ready (Phase 8 Complete)
 
@@ -10,7 +10,7 @@ Designed for Linux (X11) with a macOS nohook build path.
 - **Robust VAD**: Silero VAD v5 (ONNX) with v4 fallback and state preservation.
 - **Fast ASR**: Whisper.cpp via CGO bindings.
 - **Text Stability**: LCS-based merging for flicker-free streaming.
-- **Reliable Injection**: Clipboard-based text insertion (works on all keyboard layouts).
+- **Reliable Injection**: Clipboard-based text insertion via platform input backends.
 - **Diagnostics**: Built-in `doctor` command for environment verification.
 
 ## Docs
@@ -39,16 +39,16 @@ This downloads checksum-pinned Silero VAD, Whisper GGML, ONNX Runtime, and whisp
 
 ### 1. Prerequisites
 
-- **Linux**: X11 Session is required for text injection. Wayland support is experimental.
-- **macOS**: Accessibility permissions required for input simulation.
+- **Linux**: X11 is recommended for reliable text injection (`xdotool` + `xclip`/`xsel`). Wayland uses `wl-clipboard` for clipboard access and remains experimental for key simulation.
+- **macOS**: Accessibility permissions required for AppleScript/System Events input simulation.
 
 **Install System Dependencies (Ubuntu/Debian):**
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake pkg-config libasound2-dev portaudio19-dev \
-    libx11-dev libxtst-dev libpng-dev xclip
+sudo apt-get install -y build-essential cmake pkg-config libasound2-dev \
+    libx11-dev libxtst-dev libpng-dev xdotool xclip wl-clipboard
 ```
-*(Note: `xclip` or `xsel` is recommended for clipboard operations on Linux)*
+*(Note: `xclip` or `xsel` is used for X11 clipboard operations; `wl-clipboard` provides `wl-copy`/`wl-paste` on Wayland.)*
 
 ### 2. Setup & Build
 
@@ -117,16 +117,16 @@ Binaries will be placed in `./bin/`.
 | Core Component | Status | Description |
 | :--- | :---: | :--- |
 | **Infrastructure** | ✅ Stable | `Makefile`, `cmd/doctor`, Pre-flight checks |
-| **AudioService** | ✅ Stable | Zero-alloc ring buffer, PortAudio |
+| **AudioService** | ✅ Stable | Zero-alloc ring buffer, malgo/miniaudio |
 | **VADService** | ✅ Stable | Silero VAD v5 default with v4 fallback; v6 validation pending |
 | **ASRService** | ✅ Stable | Whisper.cpp bindings, streaming |
-| **Injector** | ✅ Stable | Clipboard-based (`Ctrl+V`), X11 optimized |
+| **Injector** | ✅ Stable | Linux `xdotool` + clipboard tools; macOS AppleScript/System Events |
 
 ## 🛠️ Troubleshooting
 
 ### Input Injection Fails / Types Gibberish
 - **Cause**: Linux keyboard layouts handle direct key-codes poorly (e.g. typing Russian on English layout).
-- **Fix**: Speak2Type uses **Clipboard Paste** by default. Ensure `xclip` is installed.
+- **Fix**: Speak2Type uses **Clipboard Paste** by default. Ensure `xdotool` and `xclip` or `xsel` are installed on X11; use `wl-clipboard` on Wayland.
 - **Wayland**: If `make doctor` shows "Session Type: wayland", injection is **unstable**. Switch to X11.
 
 ### `libonnxruntime.so` not found

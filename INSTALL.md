@@ -20,14 +20,14 @@ To disable autostart:
 
 ## Prerequisites
 
-- **Linux**: X11 session for reliable text injection. Wayland is experimental.
-- **macOS**: Accessibility permissions for input simulation.
+- **Linux**: X11 is recommended for reliable text injection (`xdotool` + `xclip`/`xsel`). Wayland uses `wl-clipboard` for clipboard access and remains experimental for key simulation.
+- **macOS**: Accessibility permissions for AppleScript/System Events input simulation.
 
 ### System Dependencies (Ubuntu/Debian)
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake pkg-config libasound2-dev portaudio19-dev \
-    libx11-dev libxtst-dev libpng-dev xclip
+sudo apt-get install -y build-essential cmake pkg-config libasound2-dev \
+    libx11-dev libxtst-dev libpng-dev xdotool xclip wl-clipboard
 ```
 
 ## Build

@@ -6,7 +6,6 @@ require (
 	github.com/gen2brain/malgo v0.11.24
 	github.com/getlantern/systray v1.2.2
 	github.com/ggerganov/whisper.cpp/bindings/go v0.0.0-20251120123511-19ceec8eac98
-	github.com/go-vgo/robotgo v1.0.0
 	github.com/godbus/dbus/v5 v5.2.0
 	github.com/robotn/gohook v0.42.3
 	github.com/yalue/onnxruntime_go v1.15.0

@@ -10,8 +10,8 @@ import (
 	"runtime"
 
 	"github.com/Ostrovsky42/speak2type/internal/audio"
+	"github.com/Ostrovsky42/speak2type/internal/input"
 	"github.com/Ostrovsky42/speak2type/internal/vad"
-	"github.com/go-vgo/robotgo"
 )
 
 // Checksums
@@ -61,25 +61,42 @@ func RunDoctor() int {
 			printOk(fmt.Sprintf("XAUTHORITY found: %s", xauth))
 		}
 
-		// Clipboard check
-		printSection("2. Clipboard Access")
-		original, err := robotgo.ReadAll()
-		if err != nil {
-			printFail(fmt.Sprintf("Failed to read clipboard: %v", err))
+		printSection("2. Input Access")
+		if err := input.CheckClipboardAccess(); err != nil {
+			printFail(fmt.Sprintf("Clipboard access failed: %v", err))
 			failCount++
 		} else {
-			printOk("Clipboard READ works.")
-			err = robotgo.WriteAll(original)
-			if err != nil {
-				printFail(fmt.Sprintf("Failed to write clipboard: %v", err))
-				failCount++
+			printOk("Clipboard READ/WRITE works.")
+		}
+
+		if err := input.CheckKeyboardAccess(); err != nil {
+			if session == "wayland" {
+				printWarn(fmt.Sprintf("Keyboard injection backend unavailable on Wayland: %v", err))
 			} else {
-				printOk("Clipboard WRITE works.")
+				printFail(fmt.Sprintf("Keyboard injection backend failed: %v", err))
+				failCount++
 			}
+		} else {
+			printOk("Keyboard injection backend works.")
 		}
 
 	} else if goos == "darwin" {
-		printOk("macOS detected. Ensure Accessibility Permissions are granted.")
+		printOk("macOS detected. Audio capture uses malgo; no extra audio backend is required.")
+
+		printSection("2. Input Access")
+		if err := input.CheckClipboardAccess(); err != nil {
+			printFail(fmt.Sprintf("Clipboard access failed: %v", err))
+			failCount++
+		} else {
+			printOk("Clipboard READ/WRITE works.")
+		}
+
+		if err := input.CheckKeyboardAccess(); err != nil {
+			printFail(fmt.Sprintf("macOS Accessibility check failed: %v", err))
+			failCount++
+		} else {
+			printOk("macOS Accessibility input access works.")
+		}
 	}
 
 	// 3. Libraries
@@ -114,14 +131,16 @@ func RunDoctor() int {
 
 	// Summary
 	// 6. Systray Dependencies
-	fmt.Println("\n🔹 6. Systray Dependencies")
-	cmd := exec.Command("pkg-config", "--exists", "ayatana-appindicator3-0.1")
-	if err := cmd.Run(); err != nil {
-		fmt.Println("   ❌ libayatana-appindicator3-dev is missing.")
-		fmt.Println("      Note: 'speak2type tray' requires this for compilation.")
-		fmt.Println("      Fix: sudo apt install libayatana-appindicator3-dev")
-	} else {
-		fmt.Println("   ✅ libayatana-appindicator3-dev found.")
+	if goos == "linux" {
+		fmt.Println("\n🔹 6. Systray Dependencies")
+		cmd := exec.Command("pkg-config", "--exists", "ayatana-appindicator3-0.1")
+		if err := cmd.Run(); err != nil {
+			fmt.Println("   ❌ libayatana-appindicator3-dev is missing.")
+			fmt.Println("      Note: 'speak2type tray' requires this for compilation.")
+			fmt.Println("      Fix: sudo apt install libayatana-appindicator3-dev")
+		} else {
+			fmt.Println("   ✅ libayatana-appindicator3-dev found.")
+		}
 	}
 
 	fmt.Println("\n---------------------------------------------------")

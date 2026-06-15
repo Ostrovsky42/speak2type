@@ -5,13 +5,14 @@ package main
 
 import (
 	"fmt"
-	"github.com/go-vgo/robotgo"
+
+	"github.com/Ostrovsky42/speak2type/internal/input"
 )
 
 func main() {
-	title := robotgo.GetTitle()
-	fmt.Printf("Title: %s\n", title)
-	// Try both variants
-	// pid := robotgo.GetPid()
-	// pid2 := robotgo.GetPID()
+	svc, err := input.NewKeyboardInjector(input.Config{Enabled: true})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Active window: %s\n", svc.GetActiveWindow())
 }

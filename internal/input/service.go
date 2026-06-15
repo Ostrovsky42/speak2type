@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/go-vgo/robotgo"
 )
 
 // KeyboardInjector handles keyboard input simulation & text injection.
@@ -18,9 +16,24 @@ type KeyboardInjector struct {
 	enabled   bool
 	isWayland bool
 	conf      Config
+	platform  platformInput
 }
 
 var ErrInjectionDisabled = errors.New("input injection disabled")
+
+type platformInput interface {
+	TypeText(text string, delay time.Duration) error
+	PasteShortcut() error
+	ReadClipboard() (string, error)
+	WriteClipboard(text string) error
+	ActiveWindow() string
+	CheckKeyboardAccess() error
+}
+
+type platformClipboard interface {
+	Read() (string, error)
+	Write(text string) error
+}
 
 // Config for KeyboardInjector
 type Config struct {
@@ -35,8 +48,7 @@ type Config struct {
 
 // NewKeyboardInjector creates a new input injector.
 func NewKeyboardInjector(cfg Config) (*KeyboardInjector, error) {
-	sessionType := os.Getenv("XDG_SESSION_TYPE")
-	isWayland := sessionType == "wayland"
+	isWayland := isWaylandSession()
 
 	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && !isWayland {
 		return nil, fmt.Errorf("DISPLAY not set and not in Wayland: input injection impossible")
@@ -55,6 +67,14 @@ func NewKeyboardInjector(cfg Config) (*KeyboardInjector, error) {
 		log.Println("⚠️  Wayland detected. Input injection FORCED (experimental).")
 	}
 
+	if injector.enabled && !cfg.DryRun {
+		platform, err := newPlatformInput(isWayland)
+		if err != nil {
+			return nil, err
+		}
+		injector.platform = platform
+	}
+
 	return injector, nil
 }
 
@@ -71,9 +91,18 @@ func (s *KeyboardInjector) Type(text string) error {
 	if !s.enabled {
 		return ErrInjectionDisabled
 	}
+	if err := s.ensurePlatform(); err != nil {
+		return err
+	}
 
 	log.Printf("⌨️  Typing text: %q", text)
-	robotgo.Type(text)
+	delay := s.conf.TypingSpeed
+	if delay <= 0 {
+		delay = 10 * time.Millisecond
+	}
+	if err := s.platform.TypeText(text, delay); err != nil {
+		return fmt.Errorf("failed to type text: %w", err)
+	}
 	return nil
 }
 
@@ -91,6 +120,9 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	if !s.enabled {
 		return ErrInjectionDisabled
 	}
+	if err := s.ensurePlatform(); err != nil {
+		return err
+	}
 
 	// 0. Focus Delay
 	if s.conf.FocusDelay > 0 {
@@ -101,7 +133,7 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	var originalContent string
 	var err error
 	if restoreClipboard {
-		originalContent, err = robotgo.ReadAll()
+		originalContent, err = s.platform.ReadClipboard()
 		if err != nil {
 			log.Printf("⚠️  Failed to read clipboard for restore: %v", err)
 			restoreClipboard = false
@@ -111,7 +143,9 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	log.Printf("📋 Pasting text: %q", text)
 
 	// 2. Set new content
-	robotgo.WriteAll(text)
+	if err := s.platform.WriteClipboard(text); err != nil {
+		return fmt.Errorf("failed to write clipboard: %w", err)
+	}
 
 	// 3. Settle delay
 	if s.conf.SettleDelay > 0 {
@@ -121,18 +155,8 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 	}
 
 	// 4. Trigger Paste (Ctrl+V / Cmd+V)
-	if runtime.GOOS == "darwin" {
-		robotgo.KeyDown("command")
-		time.Sleep(20 * time.Millisecond)
-		robotgo.KeyTap("v")
-		time.Sleep(20 * time.Millisecond)
-		robotgo.KeyUp("command")
-	} else {
-		robotgo.KeyDown("control")
-		time.Sleep(20 * time.Millisecond)
-		robotgo.KeyTap("v")
-		time.Sleep(20 * time.Millisecond)
-		robotgo.KeyUp("control")
+	if err := s.platform.PasteShortcut(); err != nil {
+		return fmt.Errorf("failed to send paste shortcut: %w", err)
 	}
 
 	// 5. Paste delay
@@ -144,21 +168,34 @@ func (s *KeyboardInjector) Paste(text string, restoreClipboard bool) error {
 
 	// 6. Restore original content
 	if restoreClipboard {
-		robotgo.WriteAll(originalContent)
-		log.Println("📋 Restored original clipboard content")
+		if err := s.platform.WriteClipboard(originalContent); err != nil {
+			log.Printf("⚠️  Failed to restore original clipboard content: %v", err)
+		} else {
+			log.Println("📋 Restored original clipboard content")
+		}
 	}
 
 	return nil
 }
 
-// GetActiveWindow returns a string identifying the current foreground window.
-// It uses title or PID depending on what robotgo provides best.
-func (s *KeyboardInjector) GetActiveWindow() string {
-	title := robotgo.GetTitle()
-	if title != "" {
-		return title
+func (s *KeyboardInjector) ensurePlatform() error {
+	if s.platform != nil {
+		return nil
 	}
-	return fmt.Sprintf("PID:%d", robotgo.GetPid())
+	platform, err := newPlatformInput(s.isWayland)
+	if err != nil {
+		return err
+	}
+	s.platform = platform
+	return nil
+}
+
+// GetActiveWindow returns a string identifying the current foreground window.
+func (s *KeyboardInjector) GetActiveWindow() string {
+	if s == nil || s.platform == nil {
+		return "unknown"
+	}
+	return s.platform.ActiveWindow()
 }
 
 // Enable toggles injection functionality.
@@ -166,4 +203,34 @@ func (s *KeyboardInjector) Enable(v bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.enabled = v
+}
+
+// CheckClipboardAccess verifies that the platform clipboard backend can read and write.
+func CheckClipboardAccess() error {
+	clipboard, err := newPlatformClipboard(isWaylandSession())
+	if err != nil {
+		return err
+	}
+
+	original, err := clipboard.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read clipboard: %w", err)
+	}
+	if err := clipboard.Write(original); err != nil {
+		return fmt.Errorf("failed to write clipboard: %w", err)
+	}
+	return nil
+}
+
+// CheckKeyboardAccess verifies that the platform keyboard backend is reachable.
+func CheckKeyboardAccess() error {
+	platform, err := newPlatformInput(isWaylandSession())
+	if err != nil {
+		return err
+	}
+	return platform.CheckKeyboardAccess()
+}
+
+func isWaylandSession() bool {
+	return os.Getenv("XDG_SESSION_TYPE") == "wayland"
 }
